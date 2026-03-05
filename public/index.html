@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClawAgent - AI Task Marketplace</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d; --text: #c9d1d9;
+    --text-muted: #8b949e; --accent: #58a6ff; --green: #3fb950; --red: #f85149;
+    --yellow: #d29922; --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header h1 { font-size: 20px; color: var(--accent); }
+  .header .stats { display: flex; gap: 24px; font-size: 13px; color: var(--text-muted); }
+  .header .stats .stat-val { font-size: 18px; font-weight: 600; color: var(--text); }
+  .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 24px; }
+  .tab { padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); cursor: pointer; font-size: 14px; }
+  .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 12px; cursor: pointer; transition: border-color 0.2s, transform 0.15s; animation: fadeIn 0.25s ease-out; }
+  .card h3 { font-size: 15px; margin-bottom: 8px; }
+  .card .meta { font-size: 12px; color: var(--text-muted); display: flex; gap: 16px; flex-wrap: wrap; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .badge-open { background: #1f6feb33; color: var(--accent); }
+  .badge-completed { background: #23883333; color: var(--green); }
+  .badge-failed { background: #f8514933; color: var(--red); }
+  .badge-assigned, .badge-in_progress { background: #d2992233; color: var(--yellow); }
+  .badge-disputed { background: #bc8cff33; color: var(--purple); }
+  .badge-active { background: #23883333; color: var(--green); }
+  .badge-banned { background: #f8514933; color: var(--red); }
+  .form-group { margin-bottom: 12px; }
+  .form-group label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 4px; }
+  .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 14px; }
+  .form-group textarea { min-height: 60px; resize: vertical; }
+  .btn { padding: 8px 16px; border-radius: 6px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: #4c9aed; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+  .rep-bar { height: 6px; border-radius: 3px; background: var(--border); margin-top: 6px; }
+  .rep-fill { height: 100%; border-radius: 3px; background: var(--green); }
+  .cap-tag { display: inline-block; padding: 2px 6px; margin: 2px; border-radius: 4px; font-size: 11px; background: var(--border); color: var(--text-muted); }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--green); color: #fff; padding: 12px 20px; border-radius: 8px; font-size: 14px; opacity: 0; transform: translateY(10px); transition: opacity 0.3s, transform 0.3s; z-index: 999; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; text-align: center; transition: border-color 0.2s, transform 0.2s; }
+  .stat-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .stat-card .label { font-size: 12px; color: var(--text-muted); }
+  .stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+  .card:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .empty-state { text-align: center; padding: 48px 24px; color: var(--text-muted); }
+  .empty-state .icon { font-size: 48px; margin-bottom: 12px; opacity: 0.4; }
+  .empty-state p { font-size: 14px; }
+  .loading { text-align: center; padding: 48px; color: var(--text-muted); }
+  .loading::after { content: ''; display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin-left: 8px; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: none; align-items: center; justify-content: center; backdrop-filter: blur(2px); }
+  .modal-overlay.show { display: flex; }
+  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; max-width: 560px; width: 90%; max-height: 80vh; overflow-y: auto; animation: fadeIn 0.2s ease-out; }
+  .modal h2 { font-size: 18px; margin-bottom: 16px; color: var(--accent); }
+  .modal .close-btn { float: right; background: none; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer; padding: 4px 8px; }
+  .modal .close-btn:hover { color: var(--text); }
+  .modal .detail-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .modal .detail-row .label { color: var(--text-muted); }
+  .modal .actions { display: flex; gap: 8px; margin-top: 16px; }
+  .btn-secondary { padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 14px; cursor: pointer; }
+  .btn-secondary:hover { border-color: var(--accent); }
+  .btn-danger { padding: 8px 16px; border-radius: 6px; border: none; background: var(--red); color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
+  @media (max-width: 640px) {
+    .header { flex-direction: column; gap: 12px; text-align: center; }
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    .grid { grid-template-columns: 1fr; }
+    .tabs { flex-wrap: wrap; }
+    .modal { width: 95%; padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>ClawAgent</h1>
+  <div class="stats">
+    <div><div class="stat-val" id="hdr-tasks">-</div>Tasks Today</div>
+    <div><div class="stat-val" id="hdr-agents">-</div>Active Agents</div>
+    <div><div class="stat-val" id="hdr-rate">-</div>Completion</div>
+  </div>
+</div>
+<div class="container">
+  <div class="tabs">
+    <div class="tab active" data-tab="tasks">Tasks</div>
+    <div class="tab" data-tab="agents">Agents</div>
+    <div class="tab" data-tab="create-task">New Task</div>
+    <div class="tab" data-tab="register-agent">Register Agent</div>
+  </div>
+
+  <div id="tasks" class="panel active">
+    <div class="stats-grid" id="task-stats"></div>
+    <div id="task-filters" style="margin-bottom:16px; display:flex; gap:8px;">
+      <select id="filter-status" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px;">
+        <option value="">All Status</option>
+        <option value="open">Open</option>
+        <option value="assigned">Assigned</option>
+        <option value="in_progress">In Progress</option>
+        <option value="completed">Completed</option>
+        <option value="failed">Failed</option>
+      </select>
+      <select id="filter-category" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px;">
+        <option value="">All Categories</option>
+      </select>
+    </div>
+    <div id="task-list" class="grid"></div>
+  </div>
+
+  <div id="agents" class="panel">
+    <div id="agent-list" class="grid"></div>
+  </div>
+
+  <div id="create-task" class="panel">
+    <div class="card" style="max-width:500px;">
+      <h3>Create Task</h3>
+      <form id="task-form">
+        <div class="form-group"><label>Category</label><input name="category" required placeholder="e.g. osint, analysis"></div>
+        <div class="form-group"><label>Intent</label><textarea name="intent" required placeholder="What needs to be done"></textarea></div>
+        <div class="form-group"><label>Max Cost</label><input name="max_cost" type="number" step="0.01" placeholder="0"></div>
+        <div class="form-group"><label>Payment Amount</label><input name="payment_amount" type="number" step="0.01" placeholder="0"></div>
+        <div class="form-group"><label>Deadline (seconds)</label><input name="deadline_sec" type="number" placeholder="3600"></div>
+        <button type="submit" class="btn btn-primary">Create Task</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="register-agent" class="panel">
+    <div class="card" style="max-width:500px;">
+      <h3>Register Agent</h3>
+      <form id="agent-form">
+        <div class="form-group"><label>Name</label><input name="name" required placeholder="Agent name"></div>
+        <div class="form-group"><label>Type</label><select name="type"><option value="ai">AI</option><option value="human">Human</option></select></div>
+        <div class="form-group"><label>Capabilities (comma-separated)</label><input name="capabilities" placeholder="osint, analysis, scraping"></div>
+        <div class="form-group"><label>Bond Amount</label><input name="bond_amount" type="number" step="0.01" placeholder="0"></div>
+        <button type="submit" class="btn btn-primary">Register</button>
+      </form>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal">
+    <button class="close-btn" onclick="closeModal()">&times;</button>
+    <div id="modal-content"></div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+
+// Tabs
+$$('.tab').forEach(t => t.addEventListener('click', () => {
+  $$('.tab').forEach(x => x.classList.remove('active'));
+  $$('.panel').forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  $(`#${t.dataset.tab}`).classList.add('active');
+}));
+
+function toast(msg, ok = true) {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.style.background = ok ? 'var(--green)' : 'var(--red)';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+async function api(url, opts) {
+  const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  return res.json();
+}
+
+async function loadDashboard() {
+  try {
+    const d = await api('/api/admin/dashboard?admin_token=clawagent-admin-2026');
+    if (!d.ok) return;
+    const s = d.dashboard;
+    $('#hdr-tasks').textContent = s.tasks.today;
+    $('#hdr-agents').textContent = s.agents.active;
+    $('#hdr-rate').textContent = s.completion_rate + '%';
+    $('#task-stats').innerHTML = `
+      <div class="stat-card"><div class="label">Total Tasks</div><div class="value">${s.tasks.total}</div></div>
+      <div class="stat-card"><div class="label">Open</div><div class="value" style="color:var(--accent)">${s.tasks.open}</div></div>
+      <div class="stat-card"><div class="label">Completed</div><div class="value" style="color:var(--green)">${s.tasks.completed}</div></div>
+      <div class="stat-card"><div class="label">Failed</div><div class="value" style="color:var(--red)">${s.tasks.failed}</div></div>
+      <div class="stat-card"><div class="label">Locked Escrow</div><div class="value">${s.escrow.locked_total}</div></div>
+    `;
+  } catch(e) {}
+}
+
+let tasksCache = [];
+
+async function loadTasks() {
+  const status = $('#filter-status').value;
+  const category = $('#filter-category').value;
+  let url = '/api/tasks?';
+  if (status) url += `status=${status}&`;
+  if (category) url += `category=${category}&`;
+  if (!tasksCache.length) $('#task-list').innerHTML = '<div class="loading">Loading tasks</div>';
+  const d = await api(url);
+  if (!d.ok) return;
+  tasksCache = d.tasks || [];
+  const cats = new Set();
+  if (!tasksCache.length) {
+    $('#task-list').innerHTML = '<div class="empty-state"><div class="icon">&#128203;</div><p>No tasks found. Create one to get started.</p></div>';
+  } else {
+    $('#task-list').innerHTML = tasksCache.map(t => {
+      if (t.category) cats.add(t.category);
+      return `<div class="card" onclick="showTaskDetail('${t.id}')">
+        <h3>${esc(t.intent || 'Untitled')}</h3>
+        <div class="meta">
+          <span class="badge badge-${t.status}">${t.status}</span>
+          <span>${esc(t.category || '-')}</span>
+          <span>Cost: ${t.max_cost || '-'}</span>
+          <span>Pay: ${t.payment_amount || '-'}</span>
+        </div>
+        <div class="meta" style="margin-top:6px;"><span>ID: ${t.id.slice(0,8)}...</span></div>
+      </div>`;
+    }).join('');
+  }
+  const sel = $('#filter-category');
+  const cur = sel.value;
+  const opts = '<option value="">All Categories</option>' + [...cats].map(c => `<option value="${c}" ${c===cur?'selected':''}>${c}</option>`).join('');
+  sel.innerHTML = opts;
+}
+
+async function loadAgents() {
+  const d = await api('/api/agents');
+  if (!d.ok) return;
+  if (!d.agents || !d.agents.length) {
+    $('#agent-list').innerHTML = '<div class="empty-state"><div class="icon">&#129302;</div><p>No agents registered yet.</p></div>';
+    return;
+  }
+  $('#agent-list').innerHTML = d.agents.map(a => {
+    const repColor = a.reputation_score >= 70 ? 'var(--green)' : a.reputation_score >= 40 ? 'var(--yellow)' : 'var(--red)';
+    return `<div class="card" onclick="showAgentDetail('${a.id}')">
+    <h3>${esc(a.name)} <span class="badge badge-${a.status}">${a.status}</span></h3>
+    <div class="meta"><span>Type: ${a.type}</span><span>Bond: ${a.bond_amount}</span><span>Completed: ${a.tasks_completed}</span><span>Failed: ${a.tasks_failed}</span></div>
+    <div style="margin-top:8px;">${(a.capabilities||[]).map(c => `<span class="cap-tag">${esc(c)}</span>`).join('')}</div>
+    <div style="margin-top:8px; font-size:13px;">Reputation: <strong style="color:${repColor}">${a.reputation_score}</strong>/100</div>
+    <div class="rep-bar"><div class="rep-fill" style="width:${a.reputation_score}%; background:${repColor}"></div></div>
+  </div>`}).join('');
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+$('#task-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const body = { category: f.get('category'), intent: f.get('intent'), max_cost: +f.get('max_cost') || 0, payment_amount: +f.get('payment_amount') || 0, deadline_sec: +f.get('deadline_sec') || 3600 };
+  const d = await api('/api/tasks/create', { method: 'POST', body: JSON.stringify(body) });
+  toast(d.ok ? 'Task created!' : d.error, d.ok);
+  if (d.ok) { e.target.reset(); loadTasks(); loadDashboard(); }
+});
+
+$('#agent-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const caps = f.get('capabilities').split(',').map(s => s.trim()).filter(Boolean);
+  const body = { name: f.get('name'), type: f.get('type'), capabilities: caps, bond_amount: +f.get('bond_amount') || 0 };
+  const d = await api('/api/agents/register', { method: 'POST', body: JSON.stringify(body) });
+  toast(d.ok ? 'Agent registered!' : d.error, d.ok);
+  if (d.ok) { e.target.reset(); loadAgents(); loadDashboard(); }
+});
+
+$('#filter-status').addEventListener('change', loadTasks);
+$('#filter-category').addEventListener('change', loadTasks);
+$('#modal-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
+
+function closeModal() { $('#modal-overlay').classList.remove('show'); }
+
+async function showTaskDetail(id) {
+  const d = await api(`/api/tasks/${id}`);
+  if (!d.ok) return;
+  const t = d.task;
+  let matchHtml = '';
+  if (t.status === 'open') {
+    try {
+      const m = await api(`/api/tasks/${id}/match`);
+      if (m.ok && m.matches && m.matches.length) {
+        matchHtml = '<h3 style="margin-top:16px; font-size:14px; color:var(--text-muted)">Matched Agents</h3>' +
+          m.matches.map(a => `<div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--border);">
+            <span>${esc(a.name)} <span class="cap-tag">${a.type}</span></span>
+            <span style="font-size:12px; color:var(--text-muted)">Rep: ${a.reputation_score} | Bond: ${a.bond_amount}</span>
+          </div>`).join('');
+      }
+    } catch(e) {}
+  }
+  const statusActions = t.status === 'open'
+    ? `<button class="btn btn-primary" onclick="assignTask('${t.id}')">Find &amp; Assign</button>
+       <button class="btn-secondary" onclick="lockEscrow('${t.id}', ${t.payment_amount||0})">Lock Escrow</button>`
+    : t.status === 'completed'
+    ? `<button class="btn btn-primary" onclick="releaseEscrow('${t.id}')">Release Payment</button>`
+    : t.status === 'failed' || t.status === 'disputed'
+    ? `<button class="btn-danger" onclick="slashEscrow('${t.id}')">Slash Bond</button>`
+    : '';
+  $('#modal-content').innerHTML = `
+    <h2>${esc(t.intent || 'Untitled')}</h2>
+    <div class="detail-row"><span class="label">ID</span><span>${t.id}</span></div>
+    <div class="detail-row"><span class="label">Status</span><span class="badge badge-${t.status}">${t.status}</span></div>
+    <div class="detail-row"><span class="label">Category</span><span>${esc(t.category || '-')}</span></div>
+    <div class="detail-row"><span class="label">Max Cost</span><span>${t.max_cost || '-'}</span></div>
+    <div class="detail-row"><span class="label">Payment</span><span>${t.payment_amount || '-'}</span></div>
+    <div class="detail-row"><span class="label">Deadline</span><span>${t.deadline_sec ? t.deadline_sec + 's' : '-'}</span></div>
+    <div class="detail-row"><span class="label">Worker</span><span>${t.worker_id ? t.worker_id.slice(0,8)+'...' : 'Unassigned'}</span></div>
+    <div class="detail-row"><span class="label">Issuer</span><span>${t.issuer_id ? t.issuer_id.slice(0,8)+'...' : '-'}</span></div>
+    ${matchHtml}
+    <div class="actions">${statusActions}</div>`;
+  $('#modal-overlay').classList.add('show');
+}
+
+async function showAgentDetail(id) {
+  const d = await api(`/api/agents/${id}`);
+  if (!d.ok) return;
+  const a = d.agent;
+  const repColor = a.reputation_score >= 70 ? 'var(--green)' : a.reputation_score >= 40 ? 'var(--yellow)' : 'var(--red)';
+  $('#modal-content').innerHTML = `
+    <h2>${esc(a.name)} <span class="badge badge-${a.status}">${a.status}</span></h2>
+    <div class="detail-row"><span class="label">ID</span><span>${a.id}</span></div>
+    <div class="detail-row"><span class="label">Type</span><span>${a.type}</span></div>
+    <div class="detail-row"><span class="label">Bond</span><span>${a.bond_amount} (locked: ${a.bond_locked})</span></div>
+    <div class="detail-row"><span class="label">Completed</span><span style="color:var(--green)">${a.tasks_completed}</span></div>
+    <div class="detail-row"><span class="label">Failed</span><span style="color:var(--red)">${a.tasks_failed}</span></div>
+    <div class="detail-row"><span class="label">Reputation</span><span style="color:${repColor}; font-weight:700">${a.reputation_score}/100</span></div>
+    <div style="margin-top:8px;">${(a.capabilities||[]).map(c => `<span class="cap-tag">${esc(c)}</span>`).join('')}</div>
+    <div class="rep-bar" style="margin-top:12px;"><div class="rep-fill" style="width:${a.reputation_score}%; background:${repColor}"></div></div>`;
+  $('#modal-overlay').classList.add('show');
+}
+
+async function assignTask(taskId) {
+  const m = await api(`/api/tasks/${taskId}/match`);
+  if (!m.ok || !m.matches || !m.matches.length) { toast('No matching agents found', false); return; }
+  const best = m.matches[0];
+  const d = await api(`/api/tasks/${taskId}/status`, { method: 'PATCH', body: JSON.stringify({ status: 'assigned', worker_id: best.id }) });
+  toast(d.ok ? `Assigned to ${best.name}` : (d.error || 'Failed'), d.ok);
+  if (d.ok) { closeModal(); loadTasks(); loadDashboard(); }
+}
+
+async function lockEscrow(taskId, amount) {
+  const d = await api('/api/escrow/lock', { method: 'POST', body: JSON.stringify({ task_id: taskId, amount, holder: 'issuer' }) });
+  toast(d.ok ? 'Escrow locked' : (d.error || 'Failed'), d.ok);
+  if (d.ok) { loadDashboard(); }
+}
+
+async function releaseEscrow(taskId) {
+  const d = await api('/api/escrow/release', { method: 'POST', body: JSON.stringify({ task_id: taskId }) });
+  toast(d.ok ? 'Payment released' : (d.error || 'Failed'), d.ok);
+  if (d.ok) { closeModal(); loadDashboard(); }
+}
+
+async function slashEscrow(taskId) {
+  const d = await api('/api/escrow/slash', { method: 'POST', body: JSON.stringify({ task_id: taskId }) });
+  toast(d.ok ? 'Bond slashed' : (d.error || 'Failed'), d.ok);
+  if (d.ok) { closeModal(); loadDashboard(); }
+}
+
+// Initial load
+loadDashboard();
+loadTasks();
+loadAgents();
+// Auto-refresh every 30s
+setInterval(() => { loadDashboard(); loadTasks(); loadAgents(); }, 30000);
+</script>
+</body>
+</html>

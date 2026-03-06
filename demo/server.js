@@ -1,48 +1,56 @@
 /**
  * demo/server.js — Agent B (Seller)
- * Runs an API server on port 3770 protected by intmax402 identity mode.
- * Agent A must authenticate with a signed Ethereum wallet to access /intelligence.
+ * INTMAX402-protected API server
  */
-
-import express from 'express'
-import { createRequire } from 'module'
+import { createRequire } from "module"
+import chalk from "chalk"
 
 const require = createRequire(import.meta.url)
+const express = require("express")
 
-// intmax402-express is CJS, require() works fine
-const { intmax402 } = require('@tanakayuto/intmax402-express')
-
-const SECRET = 'clawagent-demo-secret-2026'
 const PORT = 3770
+const SECRET = "clawagent-demo-secret-2026"
 
-const app = express()
-app.use(express.json())
+async function main() {
+  const { intmax402 } = await import("@tanakayuto/intmax402-express")
+  const app = express()
 
-// ── Free endpoint (no auth) ──────────────────────────────────────────────────
-app.get('/free', (req, res) => {
-  res.json({
-    message: 'Hello from Agent B! This endpoint is free.',
-    agent: 'ClawAgent-B',
+  // Free endpoint
+  app.get("/free", (_req, res) => {
+    res.json({ message: "Hello from Agent B! This endpoint is free.", agent: "ClawAgent-B" })
   })
-})
 
-// ── Protected endpoint (intmax402 identity mode) ─────────────────────────────
-app.get(
-  '/intelligence',
-  intmax402({ mode: 'identity', secret: SECRET }),
-  (req, res) => {
-    const { address } = req.intmax402
-    res.json({
-      intelligence:
-        '🔐 CLASSIFIED: The next frontier of AI is agent-to-agent commerce. ' +
-        'Autonomous agents will negotiate, pay, and authenticate without human intervention.',
-      accessedBy: address,
-      timestamp: new Date().toISOString(),
-      protocol: 'INTMAX402',
-    })
-  }
-)
+  // Protected endpoint
+  app.get(
+    "/intelligence",
+    intmax402({ mode: "identity", secret: SECRET }),
+    (req, res) => {
+      res.json({
+        intelligence: "🔐 CLASSIFIED: The next frontier of AI is agent-to-agent commerce. Autonomous agents will negotiate, pay, and authenticate without human intervention.",
+        accessedBy: req.intmax402?.address,
+        timestamp: new Date().toISOString(),
+        protocol: "INTMAX402",
+      })
+    }
+  )
 
-app.listen(PORT, () => {
-  console.log(`Agent B listening on http://localhost:${PORT}`)
+  app.listen(PORT, () => {
+    console.log(chalk.cyan("╔" + "═".repeat(50) + "╗"))
+    console.log(chalk.cyan("║") + chalk.bold.white("  Agent B — INTMAX402 Protected API              ") + chalk.cyan("║"))
+    console.log(chalk.cyan("╚" + "═".repeat(50) + "╝"))
+    console.log(chalk.dim("  Port    : ") + chalk.white(PORT))
+    console.log(chalk.dim("  Mode    : ") + chalk.white("identity"))
+    console.log(chalk.dim("  Secret  : ") + chalk.white(SECRET))
+    console.log("")
+    console.log(chalk.dim("  Endpoints:"))
+    console.log(chalk.dim("  ├─ GET /free          ") + chalk.green("(open)"))
+    console.log(chalk.dim("  └─ GET /intelligence  ") + chalk.yellow("(🔐 INTMAX402 identity)"))
+    console.log("")
+    console.log(chalk.dim("  Waiting for connections..."))
+  })
+}
+
+main().catch((err) => {
+  console.error(chalk.red("Error: " + err.message))
+  process.exit(1)
 })

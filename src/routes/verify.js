@@ -1,12 +1,23 @@
 const express = require('express');
+const { body, validationResult } = require('express-validator');
 const { getDb } = require('../db');
+const { apiKeyAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
+// All verify routes require auth
+router.use(apiKeyAuth);
+
+const verifyValidation = [
+  body('task_id').isString().trim().notEmpty().withMessage('task_id is required'),
+];
+
 // POST /api/verify
-router.post('/', (req, res) => {
+router.post('/', verifyValidation, (req, res) => {
+  const valErrors = validationResult(req);
+  if (!valErrors.isEmpty()) return res.status(400).json({ ok: false, errors: valErrors.array() });
+
   const { task_id, result } = req.body;
-  if (!task_id) return res.status(400).json({ ok: false, error: 'task_id required' });
 
   const db = getDb();
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(task_id);

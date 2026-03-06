@@ -12,6 +12,7 @@ function getDb() {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     initSchema();
+    migrate();
     seedIfEmpty();
   }
   return db;
@@ -24,6 +25,7 @@ function initSchema() {
       name TEXT,
       type TEXT,
       capabilities TEXT,
+      api_key TEXT UNIQUE,
       bond_amount REAL DEFAULT 0,
       bond_locked REAL DEFAULT 0,
       reputation_score REAL DEFAULT 50,
@@ -74,6 +76,20 @@ function initSchema() {
       created_at INTEGER
     );
   `);
+}
+
+function migrate() {
+  // Add api_key column if missing (for existing databases)
+  const cols = db.prepare("PRAGMA table_info(agents)").all();
+  if (!cols.find(c => c.name === 'api_key')) {
+    db.exec('ALTER TABLE agents ADD COLUMN api_key TEXT UNIQUE');
+    // Generate api_keys for existing agents that don't have one
+    const agents = db.prepare('SELECT id FROM agents WHERE api_key IS NULL').all();
+    const update = db.prepare('UPDATE agents SET api_key = ? WHERE id = ?');
+    for (const a of agents) {
+      update.run(uuidv4(), a.id);
+    }
+  }
 }
 
 function seedIfEmpty() {

@@ -1,14 +1,31 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
+const { body, validationResult } = require('express-validator');
 const { getDb } = require('../db');
+const { apiKeyAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
+// All escrow routes require auth
+router.use(apiKeyAuth);
+
+const lockValidation = [
+  body('task_id').isString().trim().notEmpty().withMessage('task_id is required'),
+  body('amount').isFloat({ gt: 0 }).withMessage('amount must be a positive number'),
+  body('holder').optional().isString(),
+];
+
+const taskIdValidation = [
+  body('task_id').isString().trim().notEmpty().withMessage('task_id is required'),
+];
+
 // POST /api/escrow/lock
-router.post('/lock', (req, res) => {
+router.post('/lock', lockValidation, (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
+
   const db = getDb();
   const { task_id, amount, holder } = req.body;
-  if (!task_id || !amount) return res.status(400).json({ ok: false, error: 'task_id and amount required' });
 
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(task_id);
   if (!task) return res.status(404).json({ ok: false, error: 'Task not found' });
@@ -23,10 +40,12 @@ router.post('/lock', (req, res) => {
 });
 
 // POST /api/escrow/release
-router.post('/release', (req, res) => {
+router.post('/release', taskIdValidation, (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
+
   const db = getDb();
   const { task_id } = req.body;
-  if (!task_id) return res.status(400).json({ ok: false, error: 'task_id required' });
 
   const escrowRow = db.prepare("SELECT * FROM escrow WHERE task_id = ? AND status = 'locked'").get(task_id);
   if (!escrowRow) return res.status(404).json({ ok: false, error: 'No locked escrow for this task' });
@@ -38,10 +57,12 @@ router.post('/release', (req, res) => {
 });
 
 // POST /api/escrow/slash
-router.post('/slash', (req, res) => {
+router.post('/slash', taskIdValidation, (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
+
   const db = getDb();
   const { task_id } = req.body;
-  if (!task_id) return res.status(400).json({ ok: false, error: 'task_id required' });
 
   const escrowRow = db.prepare("SELECT * FROM escrow WHERE task_id = ? AND status = 'locked'").get(task_id);
   if (!escrowRow) return res.status(404).json({ ok: false, error: 'No locked escrow for this task' });

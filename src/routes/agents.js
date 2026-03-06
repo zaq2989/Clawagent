@@ -1,21 +1,32 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
+const { body, validationResult } = require('express-validator');
 const { getDb } = require('../db');
 
 const router = express.Router();
 
+const registerValidation = [
+  body('name').isString().trim().notEmpty().withMessage('Name is required'),
+  body('type').optional().isIn(['ai', 'human']).withMessage('type must be ai or human'),
+  body('capabilities').optional().isArray().withMessage('capabilities must be an array'),
+  body('bond_amount').optional().isFloat({ min: 0 }).withMessage('bond_amount must be a non-negative number'),
+];
+
 // POST /api/agents/register
-router.post('/register', (req, res) => {
+router.post('/register', registerValidation, (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
+
   const db = getDb();
   const { name, type, capabilities, bond_amount } = req.body;
-  if (!name) return res.status(400).json({ ok: false, error: 'Name is required' });
 
   const id = uuidv4();
+  const apiKey = uuidv4();
   const now = Date.now();
-  db.prepare(`INSERT INTO agents (id, name, type, capabilities, bond_amount, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(id, name, type || 'ai', JSON.stringify(capabilities || []), bond_amount || 0, now);
+  db.prepare(`INSERT INTO agents (id, name, type, capabilities, api_key, bond_amount, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, name, type || 'ai', JSON.stringify(capabilities || []), apiKey, bond_amount || 0, now);
 
-  res.json({ ok: true, agent: { id, name, status: 'active', created_at: now } });
+  res.json({ ok: true, agent: { id, name, api_key: apiKey, status: 'active', created_at: now } });
 });
 
 // GET /api/agents

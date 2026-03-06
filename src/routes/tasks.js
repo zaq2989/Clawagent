@@ -1,11 +1,35 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
+const { body, validationResult } = require('express-validator');
 const { getDb } = require('../db');
+const { updateReputation } = require('./reputation');
+const { circuitBreaker } = require('../circuit');
+const { apiKeyAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
-// POST /api/tasks/create
-router.post('/create', (req, res) => {
+const VALID_CATEGORIES = ['osint', 'web_scraping', 'analysis', 'data_collection', 'reporting', 'code', 'translation'];
+
+const createTaskValidation = [
+  body('category').isIn(VALID_CATEGORIES).withMessage(`category must be one of: ${VALID_CATEGORIES.join(', ')}`),
+  body('intent').isString().trim().notEmpty().withMessage('intent is required'),
+  body('payment_amount').optional().isFloat({ gt: 0 }).withMessage('payment_amount must be a positive number'),
+  body('max_cost').optional().isFloat({ gt: 0 }).withMessage('max_cost must be a positive number'),
+  body('deadline_sec').optional().isInt({ gt: 0 }).withMessage('deadline_sec must be a positive integer'),
+  body('parent_id').optional().isString(),
+  body('issuer_id').optional().isString(),
+];
+
+const statusValidation = [
+  body('status').isIn(['open', 'assigned', 'in_progress', 'completed', 'failed', 'disputed']).withMessage('Invalid status'),
+  body('worker_id').optional().isString(),
+];
+
+// POST /api/tasks/create (auth required)
+router.post('/create', apiKeyAuth, createTaskValidation, (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
+
   const db = getDb();
   const { parent_id, category, intent, input_schema, input_data, output_contract, success_criteria, deadline_sec, max_cost, payment_amount, issuer_id } = req.body;
   const id = uuidv4();
@@ -22,7 +46,7 @@ router.post('/create', (req, res) => {
   res.json({ ok: true, task: { id, status: 'open', created_at: now } });
 });
 
-// GET /api/tasks
+// GET /api/tasks (public)
 router.get('/', (req, res) => {
   const db = getDb();
   const { status, category } = req.query;
@@ -35,7 +59,7 @@ router.get('/', (req, res) => {
   res.json({ ok: true, tasks });
 });
 
-// GET /api/tasks/:id
+// GET /api/tasks/:id (public)
 router.get('/:id', (req, res) => {
   const db = getDb();
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
@@ -43,12 +67,13 @@ router.get('/:id', (req, res) => {
   res.json({ ok: true, task });
 });
 
-// PATCH /api/tasks/:id/status
-router.patch('/:id/status', (req, res) => {
+// PATCH /api/tasks/:id/status (auth required)
+router.patch('/:id/status', apiKeyAuth, statusValidation, (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
+
   const db = getDb();
   const { status, worker_id, result } = req.body;
-  const validStatuses = ['open', 'assigned', 'in_progress', 'completed', 'failed', 'disputed'];
-  if (!validStatuses.includes(status)) return res.status(400).json({ ok: false, error: 'Invalid status' });
 
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
   if (!task) return res.status(404).json({ ok: false, error: 'Task not found' });
@@ -61,11 +86,20 @@ router.patch('/:id/status', (req, res) => {
   const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
   db.prepare(`UPDATE tasks SET ${setClauses} WHERE id = ?`).run(...Object.values(updates), req.params.id);
 
+  // Auto-update reputation on task completion/failure
+  const effectiveWorkerId = worker_id || task.worker_id;
+  if ((status === 'completed' || status === 'failed') && effectiveWorkerId) {
+    const repResult = updateReputation(effectiveWorkerId, req.params.id, status);
+    if (status === 'failed') circuitBreaker.recordFailure();
+    else circuitBreaker.recordSuccess();
+    return res.json({ ok: true, task_id: req.params.id, status, reputation: repResult });
+  }
+
   res.json({ ok: true, task_id: req.params.id, status });
 });
 
-// GET /api/tasks/:id/match
-router.get('/:id/match', (req, res) => {
+// GET /api/tasks/:id/match (auth required)
+router.get('/:id/match', apiKeyAuth, (req, res) => {
   const db = getDb();
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
   if (!task) return res.status(404).json({ ok: false, error: 'Task not found' });

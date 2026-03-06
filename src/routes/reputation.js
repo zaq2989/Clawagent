@@ -38,7 +38,7 @@ function updateReputation(agentId, taskId, event, extra = {}) {
   db.prepare('INSERT INTO reputation_log (id, agent_id, task_id, event, score_delta, created_at) VALUES (?, ?, ?, ?, ?, ?)')
     .run(uuidv4(), agentId, taskId, event, scoreDelta, Date.now());
 
-  return { newScore, scoreDelta };
+  return { new_score: Math.round(newScore * 100) / 100, score_delta: scoreDelta };
 }
 
 module.exports = { updateReputation };

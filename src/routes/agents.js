@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../db');
@@ -22,10 +23,12 @@ router.post('/register', registerValidation, (req, res) => {
 
   const id = uuidv4();
   const apiKey = uuidv4();
+  const hashedKey = crypto.createHash('sha256').update(apiKey).digest('hex');
   const now = Date.now();
   db.prepare(`INSERT INTO agents (id, name, type, capabilities, api_key, bond_amount, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, name, type || 'ai', JSON.stringify(capabilities || []), apiKey, bond_amount || 0, now);
+    .run(id, name, type || 'ai', JSON.stringify(capabilities || []), hashedKey, bond_amount || 0, now);
 
+  // Return plaintext key only once; it cannot be retrieved again
   res.json({ ok: true, agent: { id, name, api_key: apiKey, status: 'active', created_at: now } });
 });
 
@@ -33,7 +36,7 @@ router.post('/register', registerValidation, (req, res) => {
 router.get('/', (req, res) => {
   const db = getDb();
   const agents = db.prepare('SELECT * FROM agents ORDER BY reputation_score DESC').all();
-  res.json({ ok: true, agents: agents.map(a => ({ ...a, capabilities: JSON.parse(a.capabilities || '[]') })) });
+  res.json({ ok: true, agents: agents.map(({ api_key, ...a }) => ({ ...a, capabilities: JSON.parse(a.capabilities || '[]') })) });
 });
 
 // GET /api/agents/:id
@@ -51,7 +54,8 @@ router.get('/:id', (req, res) => {
     tasks_failed: agent.tasks_failed
   };
 
-  res.json({ ok: true, agent: { ...agent, capabilities: JSON.parse(agent.capabilities || '[]'), reputation } });
+  const { api_key, ...safeAgent } = agent;
+  res.json({ ok: true, agent: { ...safeAgent, capabilities: JSON.parse(agent.capabilities || '[]'), reputation } });
 });
 
 module.exports = router;

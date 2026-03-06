@@ -1,69 +1,106 @@
-// Circuit Breaker: consecutive failures and budget monitoring
-
-const state = {
-  consecutiveFailures: 0,
-  cooldownUntil: null,
-  budgetUsed: 0,
-  budgetLimit: 0,
-  windowStart: Date.now(),
-};
+// Circuit Breaker: per-agent consecutive failures and cooldown tracking
 
 const FAILURE_THRESHOLD = 3;
 const COOLDOWN_MS = 3600000; // 1 hour
 const BUDGET_ALERT_RATIO = 0.2;
 
+const globalState = {
+  budgetUsed: 0,
+  budgetLimit: 0,
+  windowStart: Date.now(),
+};
+
+// Per-agent circuit state: { consecutiveFailures, cooldownUntil }
+const agentStates = new Map();
+
+function getAgentState(agentId) {
+  if (!agentStates.has(agentId)) {
+    agentStates.set(agentId, { consecutiveFailures: 0, cooldownUntil: null });
+  }
+  return agentStates.get(agentId);
+}
+
 const circuitBreaker = {
-  recordFailure() {
-    state.consecutiveFailures++;
-    if (state.consecutiveFailures >= FAILURE_THRESHOLD) {
-      state.cooldownUntil = Date.now() + COOLDOWN_MS;
-      console.log(`[CIRCUIT BREAKER] ALERT to Kiri: ${FAILURE_THRESHOLD} consecutive failures. Cooldown until ${new Date(state.cooldownUntil).toISOString()}`);
+  recordFailure(agentId) {
+    const s = getAgentState(agentId);
+    s.consecutiveFailures++;
+    if (s.consecutiveFailures >= FAILURE_THRESHOLD) {
+      s.cooldownUntil = Date.now() + COOLDOWN_MS;
+      console.log(`[CIRCUIT BREAKER] Agent ${agentId}: ${FAILURE_THRESHOLD} consecutive failures. Cooldown until ${new Date(s.cooldownUntil).toISOString()}`);
     }
   },
 
-  recordSuccess() {
-    state.consecutiveFailures = 0;
+  recordSuccess(agentId) {
+    const s = getAgentState(agentId);
+    s.consecutiveFailures = 0;
   },
 
   recordSpend(amount) {
-    if (Date.now() - state.windowStart > COOLDOWN_MS) {
-      state.budgetUsed = 0;
-      state.windowStart = Date.now();
+    if (Date.now() - globalState.windowStart > COOLDOWN_MS) {
+      globalState.budgetUsed = 0;
+      globalState.windowStart = Date.now();
     }
-    state.budgetUsed += amount;
-    if (state.budgetLimit > 0 && state.budgetUsed > state.budgetLimit * BUDGET_ALERT_RATIO) {
-      console.log(`[CIRCUIT BREAKER] ALERT to Kiri: Budget ${state.budgetUsed} exceeded 20% of limit ${state.budgetLimit} within 1h window`);
+    globalState.budgetUsed += amount;
+    if (globalState.budgetLimit > 0 && globalState.budgetUsed > globalState.budgetLimit * BUDGET_ALERT_RATIO) {
+      console.log(`[CIRCUIT BREAKER] Budget ${globalState.budgetUsed} exceeded 20% of limit ${globalState.budgetLimit} within 1h window`);
     }
   },
 
   setBudgetLimit(limit) {
-    state.budgetLimit = limit;
+    globalState.budgetLimit = limit;
   },
 
-  isOpen() {
-    if (state.cooldownUntil && Date.now() < state.cooldownUntil) return true;
-    if (state.cooldownUntil && Date.now() >= state.cooldownUntil) {
-      state.cooldownUntil = null;
-      state.consecutiveFailures = 0;
+  isOpen(agentId) {
+    if (agentId) {
+      const s = getAgentState(agentId);
+      if (s.cooldownUntil && Date.now() < s.cooldownUntil) return true;
+      if (s.cooldownUntil && Date.now() >= s.cooldownUntil) {
+        s.cooldownUntil = null;
+        s.consecutiveFailures = 0;
+      }
+      return false;
+    }
+    // Global check: any agent in cooldown
+    for (const [, s] of agentStates) {
+      if (s.cooldownUntil && Date.now() < s.cooldownUntil) return true;
     }
     return false;
   },
 
-  reset() {
-    state.consecutiveFailures = 0;
-    state.cooldownUntil = null;
-    state.budgetUsed = 0;
-    state.windowStart = Date.now();
+  reset(agentId) {
+    if (agentId) {
+      agentStates.delete(agentId);
+    } else {
+      agentStates.clear();
+      globalState.budgetUsed = 0;
+      globalState.windowStart = Date.now();
+    }
   },
 
   getStatus() {
     return {
-      is_open: circuitBreaker.isOpen(),
-      consecutive_failures: state.consecutiveFailures,
-      cooldown_until: state.cooldownUntil ? new Date(state.cooldownUntil).toISOString() : null,
-      budget_used: state.budgetUsed,
-      budget_limit: state.budgetLimit
+      budget_used: globalState.budgetUsed,
+      budget_limit: globalState.budgetLimit,
     };
+  },
+
+  getAgentStatuses(db) {
+    const agents = db.prepare('SELECT id, name, status FROM agents').all();
+    return agents.map(a => {
+      const s = agentStates.get(a.id) || { consecutiveFailures: 0, cooldownUntil: null };
+      // Clear expired cooldowns
+      if (s.cooldownUntil && Date.now() >= s.cooldownUntil) {
+        s.cooldownUntil = null;
+        s.consecutiveFailures = 0;
+      }
+      return {
+        agent_id: a.id,
+        name: a.name,
+        status: s.cooldownUntil ? 'cooldown' : a.status,
+        fail_streak: s.consecutiveFailures,
+        cooldown_until: s.cooldownUntil ? new Date(s.cooldownUntil).toISOString() : null,
+      };
+    });
   }
 };
 

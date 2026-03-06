@@ -1,6 +1,11 @@
 const Database = require('better-sqlite3');
+const crypto = require('crypto');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+
+function hashKey(key) {
+  return crypto.createHash('sha256').update(key).digest('hex');
+}
 
 const DB_PATH = path.join(__dirname, '..', 'clawagent.db');
 
@@ -87,7 +92,7 @@ function migrate() {
     const agents = db.prepare('SELECT id FROM agents WHERE api_key IS NULL').all();
     const update = db.prepare('UPDATE agents SET api_key = ? WHERE id = ?');
     for (const a of agents) {
-      update.run(uuidv4(), a.id);
+      update.run(hashKey(uuidv4()), a.id);
     }
   }
 }

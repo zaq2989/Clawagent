@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
@@ -15,7 +16,11 @@ const verifyRouter = require('./routes/verify');
 const adminRouter = require('./routes/admin');
 
 const app = express();
-const PORT = 3750;
+const PORT = process.env.PORT || 3750;
+
+// CORS
+const corsOrigin = process.env.ALLOWED_ORIGIN || '*';
+app.use(cors({ origin: corsOrigin }));
 
 // Security headers
 app.use(helmet());
@@ -62,7 +67,8 @@ app.get('/api/health', (req, res) => {
 
 // Circuit breaker status (public)
 app.get('/api/circuit/status', (req, res) => {
-  res.json({ ok: true, circuit_breaker: circuitBreaker.getStatus() });
+  const db = getDb();
+  res.json({ ok: true, agents: circuitBreaker.getAgentStatuses(db), ...circuitBreaker.getStatus() });
 });
 
 // API routes (auth handled inside each router)
@@ -94,8 +100,8 @@ app.post('/api/reputation/update', apiKeyAuth, reputationValidation, (req, res) 
   const result = updateReputation(agent_id, task_id, event, { accuracy, speed_bonus });
   if (!result) return res.status(404).json({ ok: false, error: 'Agent not found' });
 
-  if (event === 'failed') circuitBreaker.recordFailure();
-  else if (event === 'completed') circuitBreaker.recordSuccess();
+  if (event === 'failed') circuitBreaker.recordFailure(agent_id);
+  else if (event === 'completed') circuitBreaker.recordSuccess(agent_id);
 
   res.json({ ok: true, ...result });
 });

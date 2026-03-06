@@ -1,4 +1,9 @@
+const crypto = require('crypto');
 const { getDb } = require('../db');
+
+function hashKey(key) {
+  return crypto.createHash('sha256').update(key).digest('hex');
+}
 
 function apiKeyAuth(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -7,8 +12,9 @@ function apiKeyAuth(req, res, next) {
   }
 
   const apiKey = authHeader.slice(7);
+  const hashedKey = hashKey(apiKey);
   const db = getDb();
-  const agent = db.prepare('SELECT id, status FROM agents WHERE api_key = ?').get(apiKey);
+  const agent = db.prepare('SELECT id, status FROM agents WHERE api_key = ?').get(hashedKey);
 
   if (!agent) {
     return res.status(401).json({ ok: false, error: 'Invalid API key' });

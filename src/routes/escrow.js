@@ -3,6 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../db');
 const { apiKeyAuth } = require('../middleware/auth');
+const { updateReputation } = require('./reputation');
 
 const router = express.Router();
 
@@ -53,7 +54,14 @@ router.post('/release', taskIdValidation, (req, res) => {
   db.prepare("UPDATE escrow SET status = 'released' WHERE id = ?").run(escrowRow.id);
   db.prepare('UPDATE tasks SET payment_locked = 0 WHERE id = ?').run(task_id);
 
-  res.json({ ok: true, escrow: { id: escrowRow.id, task_id, status: 'released', amount: escrowRow.amount } });
+  // Auto-update worker reputation on escrow release
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(task_id);
+  let reputation = null;
+  if (task && task.worker_id) {
+    reputation = updateReputation(task.worker_id, task_id, 'completed', {});
+  }
+
+  res.json({ ok: true, escrow: { id: escrowRow.id, task_id, status: 'released', amount: escrowRow.amount }, reputation });
 });
 
 // POST /api/escrow/slash

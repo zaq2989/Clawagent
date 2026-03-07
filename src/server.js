@@ -119,3 +119,6 @@ getDb();
 app.listen(PORT, () => {
   console.log(`ClawAgent MVP running on http://localhost:${PORT}`);
 });
+
+// MCPサーバーも一緒に起動
+require('./mcp-server');

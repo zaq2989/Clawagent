@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "clawagent": {
+      "url": "http://localhost:3751/sse"
+    }
+  }
+}

@@ -5,6 +5,7 @@ const { getDb } = require('../db');
 const { updateReputation } = require('./reputation');
 const { circuitBreaker } = require('../circuit');
 const { apiKeyAuth } = require('../middleware/auth');
+const { notifyWebhook } = require('../webhook');
 
 const router = express.Router();
 
@@ -86,12 +87,40 @@ router.patch('/:id/status', apiKeyAuth, statusValidation, (req, res) => {
   const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
   db.prepare(`UPDATE tasks SET ${setClauses} WHERE id = ?`).run(...Object.values(updates), req.params.id);
 
-  // Auto-update reputation on task completion/failure
   const effectiveWorkerId = worker_id || task.worker_id;
+
+  // Notify worker webhook on task assignment
+  if (status === 'assigned' && effectiveWorkerId) {
+    const workerAgent = db.prepare('SELECT webhook_url FROM agents WHERE id = ?').get(effectiveWorkerId);
+    if (workerAgent?.webhook_url) {
+      notifyWebhook(workerAgent.webhook_url, 'task_assigned', {
+        task_id: req.params.id,
+        worker_id: effectiveWorkerId,
+        intent: task.intent,
+        category: task.category,
+        payment_amount: task.payment_amount,
+      });
+    }
+  }
+
+  // Auto-update reputation on task completion/failure + notify webhook
   if ((status === 'completed' || status === 'failed') && effectiveWorkerId) {
     const repResult = updateReputation(effectiveWorkerId, req.params.id, status);
-    if (status === 'failed') circuitBreaker.recordFailure();
-    else circuitBreaker.recordSuccess();
+    if (status === 'failed') circuitBreaker.recordFailure(effectiveWorkerId);
+    else circuitBreaker.recordSuccess(effectiveWorkerId);
+
+    // Notify worker webhook
+    const workerAgent = db.prepare('SELECT webhook_url FROM agents WHERE id = ?').get(effectiveWorkerId);
+    if (workerAgent?.webhook_url) {
+      notifyWebhook(workerAgent.webhook_url, status === 'completed' ? 'task_completed' : 'task_failed', {
+        task_id: req.params.id,
+        worker_id: effectiveWorkerId,
+        intent: task.intent,
+        category: task.category,
+        reputation: repResult,
+      });
+    }
+
     return res.json({ ok: true, task_id: req.params.id, status, reputation: repResult });
   }
 

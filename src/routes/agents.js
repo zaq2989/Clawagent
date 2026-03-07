@@ -11,6 +11,7 @@ const registerValidation = [
   body('type').optional().isIn(['ai', 'human']).withMessage('type must be ai or human'),
   body('capabilities').optional().isArray().withMessage('capabilities must be an array'),
   body('bond_amount').optional().isFloat({ min: 0 }).withMessage('bond_amount must be a non-negative number'),
+  body('webhook_url').optional().isURL().withMessage('webhook_url must be a valid URL'),
 ];
 
 // POST /api/agents/register
@@ -19,14 +20,14 @@ router.post('/register', registerValidation, (req, res) => {
   if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
 
   const db = getDb();
-  const { name, type, capabilities, bond_amount } = req.body;
+  const { name, type, capabilities, bond_amount, webhook_url } = req.body;
 
   const id = uuidv4();
   const apiKey = uuidv4();
   const hashedKey = crypto.createHash('sha256').update(apiKey).digest('hex');
   const now = Date.now();
-  db.prepare(`INSERT INTO agents (id, name, type, capabilities, api_key, bond_amount, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, name, type || 'ai', JSON.stringify(capabilities || []), hashedKey, bond_amount || 0, now);
+  db.prepare(`INSERT INTO agents (id, name, type, capabilities, api_key, bond_amount, webhook_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, name, type || 'ai', JSON.stringify(capabilities || []), hashedKey, bond_amount || 0, webhook_url || null, now);
 
   // Return plaintext key only once; it cannot be retrieved again
   res.json({ ok: true, agent: { id, name, api_key: apiKey, status: 'active', created_at: now } });

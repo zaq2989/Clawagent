@@ -11,6 +11,9 @@
   "license": "ISC",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "@x402/core": "^2.6.0",
+    "@x402/evm": "^2.6.0",
+    "@x402/express": "^2.6.0",
     "better-sqlite3": "^12.6.2",
     "cors": "^2.8.6",
     "express": "^5.2.1",
@@ -20,6 +23,7 @@
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "uuid": "^13.0.0",
+    "viem": "^2.47.0",
     "zod": "^4.3.6"
   }
 }

@@ -41,6 +41,15 @@ app.use(helmet());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
+// x402 payment middleware — gating POST /api/tasks/create with 0.001 USDC (Base Sepolia)
+try {
+  const { createX402Middleware } = require('./x402');
+  app.use(createX402Middleware());
+  console.log('[x402] Payment middleware enabled (Base Sepolia, 0.001 USDC per task)');
+} catch (e) {
+  console.warn('[x402] Payment middleware disabled:', e.message);
+}
+
 // Global rate limit: 100 req / 15 min per IP
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,

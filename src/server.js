@@ -1,3 +1,13 @@
+// Catch unhandled errors so Railway logs the cause before crash
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught Exception:', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] Unhandled Rejection:', reason);
+  process.exit(1);
+});
+
 const express = require('express');
 const path = require('path');
 const helmet = require('helmet');

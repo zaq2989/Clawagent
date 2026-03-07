@@ -21,12 +21,12 @@ async function register() {
       type: 'ai',
       capabilities: WORKER_SKILLS,
       bond_amount: 50,
-      webhook_url: ''
+
     })
   });
   const data = await res.json();
-  workerApiKey = data.api_key;
-  workerId = data.agent?.id || data.id;
+  workerApiKey = data.agent?.api_key || data.api_key;
+  workerId = data.agent?.id;
   console.log(`[${WORKER_NAME}] Registered. id=${workerId}`);
   return data;
 }
@@ -73,7 +73,7 @@ async function pollAndExecute() {
     // claim
     const claimRes = await fetch(`${CLAWAGENT_URL}/api/bounties/${matched.id}/claim`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': workerApiKey }
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${workerApiKey}` }
     });
     const claimData = await claimRes.json();
     if (!claimData.ok) {
@@ -90,7 +90,7 @@ async function pollAndExecute() {
     // 完了報告
     const completeRes = await fetch(`${CLAWAGENT_URL}/api/bounties/${matched.id}/complete`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': workerApiKey },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${workerApiKey}` },
       body: JSON.stringify({ result })
     });
     const completeData = await completeRes.json();

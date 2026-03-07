@@ -25,6 +25,7 @@ const escrowRouter = require('./routes/escrow');
 const verifyRouter = require('./routes/verify');
 const adminRouter = require('./routes/admin');
 const webhooksRouter = require('./routes/webhooks');
+const { swaggerUi, swaggerSpec } = require('./swagger');
 
 const app = express();
 const PORT = process.env.PORT || 3750;
@@ -69,6 +70,9 @@ const taskCreateLimiter = rateLimit({
 // Apply specific rate limiters
 app.post('/api/agents/register', registerLimiter);
 app.post('/api/tasks/create', taskCreateLimiter);
+
+// Swagger UI (public)
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Health check (public)
 app.get('/api/health', (req, res) => {
@@ -126,13 +130,14 @@ app.post('/api/reputation/update', apiKeyAuth, reputationValidation, (req, res) 
 // Initialize DB on startup
 getDb();
 
+// MCPルートをメインのExpressアプリに統合（listen前に登録）
+try {
+  const { createMcpRouter } = require('./mcp-server');
+  createMcpRouter(app);
+} catch (err) {
+  console.error('MCP router failed to mount:', err.message);
+}
+
 app.listen(PORT, () => {
   console.log(`ClawAgent MVP running on http://localhost:${PORT}`);
 });
-
-// MCPサーバーも一緒に起動（クラッシュしてもメインサーバーは継続）
-try {
-  require('./mcp-server');
-} catch (err) {
-  console.error('MCP server failed to start:', err.message);
-}

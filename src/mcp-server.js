@@ -15,7 +15,7 @@ const express = require('express');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { SSEServerTransport } = require('@modelcontextprotocol/sdk/server/sse.js');
 const { z } = require('zod');
-const { v4: uuidv4 } = require('uuid');
+const uuidv4 = () => require('crypto').randomUUID();
 const { getDb } = require('./db');
 const { updateReputation } = require('./routes/reputation');
 

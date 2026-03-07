@@ -1,7 +1,7 @@
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+const uuidv4 = () => require('crypto').randomUUID();
 
 function hashKey(key) {
   return crypto.createHash('sha256').update(key).digest('hex');

@@ -1,4 +1,4 @@
-const { v4: uuidv4 } = require('uuid');
+const uuidv4 = () => require('crypto').randomUUID();
 const { getDb } = require('../db');
 
 // Reputation formula:

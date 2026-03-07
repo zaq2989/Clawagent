@@ -7,6 +7,8 @@ function hashKey(key) {
   return crypto.createHash('sha256').update(key).digest('hex');
 }
 
+const { seedAgents } = require('./seed');
+
 const DB_PATH = path.join(__dirname, '..', 'clawagent.db');
 
 let db;
@@ -18,6 +20,7 @@ function getDb() {
     db.pragma('foreign_keys = ON');
     initSchema();
     migrate();
+    seedAgents(db);
     seedIfEmpty();
   }
   return db;

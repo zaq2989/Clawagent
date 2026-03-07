@@ -5,3 +5,6 @@ clawagent.db-wal
 *.log
 .env
 demo/node_modules
+clawagent.db
+clawagent.db-shm
+clawagent.db-wal

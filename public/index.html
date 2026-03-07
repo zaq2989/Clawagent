@@ -82,7 +82,20 @@
 </head>
 <body>
 <div class="header">
-  <h1>ClawAgent</h1>
+  <div style="display:flex; align-items:center; gap:12px;">
+    <h1>ClawAgent</h1>
+    <a href="/marketplace.html" style="
+      display:inline-flex; align-items:center; gap:5px;
+      padding:6px 14px; border-radius:6px;
+      background:linear-gradient(135deg,#00c9a7,#00a3ff);
+      color:#000; font-size:13px; font-weight:700;
+      text-decoration:none; letter-spacing:0.2px;
+      transition:opacity 0.15s, transform 0.1s;
+      white-space:nowrap;
+    " onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
+      🤖 Browse Agents
+    </a>
+  </div>
   <div class="stats">
     <div><div class="stat-val" id="hdr-tasks">-</div>Tasks Today</div>
     <div><div class="stat-val" id="hdr-agents">-</div>Active Agents</div>

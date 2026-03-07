@@ -33,11 +33,25 @@ router.post('/register', registerValidation, (req, res) => {
   res.json({ ok: true, agent: { id, name, api_key: apiKey, status: 'active', created_at: now } });
 });
 
-// GET /api/agents
+// GET /api/agents — public, no auth required; never exposes api_key or other private fields
 router.get('/', (req, res) => {
   const db = getDb();
-  const agents = db.prepare('SELECT * FROM agents ORDER BY reputation_score DESC').all();
-  res.json({ ok: true, agents: agents.map(({ api_key, ...a }) => ({ ...a, capabilities: JSON.parse(a.capabilities || '[]') })) });
+  const rows = db.prepare(
+    'SELECT id, name, type, capabilities, reputation_score, bond_amount, tasks_completed, tasks_failed, status, created_at FROM agents ORDER BY reputation_score DESC'
+  ).all();
+  const agents = rows.map(a => ({
+    id: a.id,
+    name: a.name,
+    type: a.type,
+    capabilities: JSON.parse(a.capabilities || '[]'),
+    reputation_score: a.reputation_score,
+    bond_amount: a.bond_amount,
+    tasks_completed: a.tasks_completed,
+    tasks_failed: a.tasks_failed,
+    status: a.status,
+    created_at: a.created_at,
+  }));
+  res.json({ ok: true, agents });
 });
 
 // GET /api/agents/:id

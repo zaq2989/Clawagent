@@ -3,7 +3,7 @@ const { getDb } = require('../db');
 const { circuitBreaker } = require('../circuit');
 
 const router = express.Router();
-const ADMIN_TOKEN = 'clawagent-admin-2026';
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'clawagent-admin-2026';
 
 function authAdmin(req, res, next) {
   const token = req.headers['x-admin-token'] || req.query.admin_token;

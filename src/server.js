@@ -120,5 +120,9 @@ app.listen(PORT, () => {
   console.log(`ClawAgent MVP running on http://localhost:${PORT}`);
 });
 
-// MCPサーバーも一緒に起動
-require('./mcp-server');
+// MCPサーバーも一緒に起動（クラッシュしてもメインサーバーは継続）
+try {
+  require('./mcp-server');
+} catch (err) {
+  console.error('MCP server failed to start:', err.message);
+}

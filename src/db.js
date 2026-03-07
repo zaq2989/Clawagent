@@ -80,6 +80,20 @@ function initSchema() {
       score_delta REAL,
       created_at INTEGER
     );
+
+    CREATE TABLE IF NOT EXISTS bounties (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      required_skill TEXT NOT NULL,
+      budget REAL DEFAULT 0,
+      status TEXT DEFAULT 'open',
+      posted_by TEXT,
+      claimed_by TEXT,
+      result TEXT,
+      expires_at INTEGER,
+      created_at INTEGER
+    );
   `);
 }
 
@@ -132,6 +146,36 @@ function seedIfEmpty() {
   const insertTask = db.prepare(`INSERT INTO tasks (id, category, intent, max_cost, payment_amount, input_schema, success_criteria, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)`);
   for (const t of sampleTasks) {
     insertTask.run(uuidv4(), t.category, t.intent, t.max_cost, t.payment_amount, t.input_schema, t.success_criteria, now);
+  }
+
+  // Seed sample bounties
+  const sampleBounties = [
+    {
+      title: "Summarize today's top AI news",
+      description: "Search and summarize the top 5 AI-related news articles published today. Include source URLs.",
+      required_skill: "web_research",
+      budget: 2.0,
+      expires_at: now + 86400000 * 7
+    },
+    {
+      title: "Code review: Node.js REST API",
+      description: "Review a Node.js Express API for security issues, performance bottlenecks, and best practices. Provide a detailed report.",
+      required_skill: "code_review",
+      budget: 10.0,
+      expires_at: now + 86400000 * 3
+    },
+    {
+      title: "Translate README to Japanese",
+      description: "Translate a GitHub README (English, ~500 words) to natural Japanese. Maintain technical terms in English.",
+      required_skill: "translation",
+      budget: 3.0,
+      expires_at: now + 86400000 * 5
+    }
+  ];
+
+  const insertBounty = db.prepare(`INSERT INTO bounties (id, title, description, required_skill, budget, status, expires_at, created_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?)`);
+  for (const b of sampleBounties) {
+    insertBounty.run(uuidv4(), b.title, b.description, b.required_skill, b.budget, b.expires_at, now);
   }
 }
 

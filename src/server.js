@@ -25,6 +25,7 @@ const escrowRouter = require('./routes/escrow');
 const verifyRouter = require('./routes/verify');
 const adminRouter = require('./routes/admin');
 const webhooksRouter = require('./routes/webhooks');
+const bountiesRouter = require('./routes/bounties');
 const { swaggerUi, swaggerSpec } = require('./swagger');
 
 const app = express();
@@ -98,6 +99,7 @@ app.use('/api/escrow', escrowRouter);
 app.use('/api/verify', verifyRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/webhooks', webhooksRouter);
+app.use('/api/bounties', bountiesRouter);
 
 // Reputation endpoint (auth required)
 const reputationValidation = [

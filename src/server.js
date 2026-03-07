@@ -1,6 +1,5 @@
 const express = require('express');
 const path = require('path');
-const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
@@ -8,19 +7,20 @@ const { getDb } = require('./db');
 const { updateReputation } = require('./routes/reputation');
 const { circuitBreaker } = require('./circuit');
 const { apiKeyAuth } = require('./middleware/auth');
+const { corsMiddleware } = require('./middleware/cors');
 
 const tasksRouter = require('./routes/tasks');
 const agentsRouter = require('./routes/agents');
 const escrowRouter = require('./routes/escrow');
 const verifyRouter = require('./routes/verify');
 const adminRouter = require('./routes/admin');
+const webhooksRouter = require('./routes/webhooks');
 
 const app = express();
 const PORT = process.env.PORT || 3750;
 
 // CORS
-const corsOrigin = process.env.ALLOWED_ORIGIN || '*';
-app.use(cors({ origin: corsOrigin }));
+app.use(corsMiddleware);
 
 // Security headers
 app.use(helmet());
@@ -65,8 +65,14 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, service: 'ClawAgent', version: '1.0.0', uptime: process.uptime() });
 });
 
-// Circuit breaker status (public)
+// Circuit breaker status (public) — original endpoint
 app.get('/api/circuit/status', (req, res) => {
+  const db = getDb();
+  res.json({ ok: true, agents: circuitBreaker.getAgentStatuses(db), ...circuitBreaker.getStatus() });
+});
+
+// Circuit breaker status (public) — canonical endpoint
+app.get('/api/circuit-breaker/status', (req, res) => {
   const db = getDb();
   res.json({ ok: true, agents: circuitBreaker.getAgentStatuses(db), ...circuitBreaker.getStatus() });
 });
@@ -77,6 +83,7 @@ app.use('/api/tasks', tasksRouter);
 app.use('/api/escrow', escrowRouter);
 app.use('/api/verify', verifyRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/webhooks', webhooksRouter);
 
 // Reputation endpoint (auth required)
 const reputationValidation = [

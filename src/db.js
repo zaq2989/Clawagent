@@ -84,9 +84,11 @@ function initSchema() {
 }
 
 function migrate() {
-  // Add api_key column if missing (for existing databases)
   const cols = db.prepare("PRAGMA table_info(agents)").all();
-  if (!cols.find(c => c.name === 'api_key')) {
+  const colNames = cols.map(c => c.name);
+
+  // Add api_key column if missing (for existing databases)
+  if (!colNames.includes('api_key')) {
     db.exec('ALTER TABLE agents ADD COLUMN api_key TEXT UNIQUE');
     // Generate api_keys for existing agents that don't have one
     const agents = db.prepare('SELECT id FROM agents WHERE api_key IS NULL').all();
@@ -94,6 +96,11 @@ function migrate() {
     for (const a of agents) {
       update.run(hashKey(uuidv4()), a.id);
     }
+  }
+
+  // Add webhook_url column if missing
+  if (!colNames.includes('webhook_url')) {
+    db.exec('ALTER TABLE agents ADD COLUMN webhook_url TEXT');
   }
 }
 

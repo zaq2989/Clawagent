@@ -1,117 +1,39 @@
 # ClawAgent × intmax402 Demo
 
-AI エージェント間の認証デモ — Agent A が Agent B の有料 API に intmax402 プロトコルで自動認証してアクセスします。
+End-to-end demo of AI-to-AI payment using [intmax402](https://github.com/zaq2989/intmax402) — HTTP 402 payment gate on INTMAX ZK L2.
 
----
+## How it works
 
-## 概要 / Overview
+1. Agent A requests a resource from Agent B
+2. Agent B responds with **402 Payment Required** + payment challenge (nonce, amount, chainId)
+3. Agent A sends ETH on **INTMAX L2** (zero-knowledge, private)
+4. Agent A presents proof (txHash + signature)
+5. Agent B verifies on-chain and grants access
 
-```
-Agent A (買い手)                         Agent B (売り手)
-  |                                          |
-  |──── GET /intelligence ──────────────────>|
-  |<─── 401 + WWW-Authenticate (nonce) ─────|
-  |                                          |
-  |  [ウォレットで nonce に署名]              |
-  |                                          |
-  |──── GET /intelligence + Authorization ──>|
-  |     address="0x...", nonce="...",        |
-  |     signature="0x..."                    |
-  |<─── 200 OK + 機密情報 ──────────────────|
-```
+## Network
 
-### 何が起きているか
+| | Mainnet (default) | Testnet |
+|---|---|---|
+| L1 | Ethereum (chainId=1) | Sepolia (chainId=11155111) |
+| L2 | Scroll (chainId=534352) | Scroll Sepolia (chainId=534351) |
+| L1 RPC | `https://api.rpc.intmax.io?network=ethereum` | `https://ethereum-sepolia-rpc.publicnode.com` |
 
-1. **Agent A** はランダムに Ethereum ウォレットを生成（身元証明）
-2. **Agent B** の `/intelligence` エンドポイントにアクセス → `401 Unauthorized` + INTMAX402 チャレンジ（nonce）を受信
-3. **Agent A** は自分の秘密鍵で nonce に署名
-4. 署名を `Authorization` ヘッダーに乗せて再リクエスト
-5. **Agent B** が署名を検証 → 正当なエージェントと認定 → 機密情報を返す
-
-### ポイント
-- **事前登録不要** — ウォレットアドレスさえあれば誰でも認証可能
-- **ガスフリー** — identity mode はオンチェーン取引なし（署名のみ）
-- **AI ネイティブ** — エージェントが自律的に認証フローを完結
-
----
-
-## 起動方法 / Quick Start
+## Quick Start (Mainnet)
 
 ```bash
-cd /home/zaq/Projects/clawagent
-bash demo/run-demo.sh
+# Terminal 1: Start Agent B (server)
+node demo/payment-server.js
+
+# Terminal 2: Run Agent A (client)
+CLIENT_PRIVATE_KEY=0x<your-key> node demo/payment-demo.js
 ```
 
-### 期待される出力
+**Requirements:** Agent A must have ETH deposited on INTMAX mainnet.  
+Deposit at: https://intmax.io
 
-```
-🚀 ClawAgent × intmax402 Demo
-================================
-Starting Agent B server...
-Agent B listening on http://localhost:3770
-Agent A connecting...
+## Quick Start (Testnet)
 
-🤖 Agent A initialized
-   Wallet address : 0x1234...abcd
-   (ephemeral — generated fresh each run)
-
-📡 Step 0: GET /free (no auth required)
-   → 200 OK
-   → {"message":"Hello from Agent B!","agent":"ClawAgent-B"}
-
-📡 Step 1: GET /intelligence (no auth)
-   → 401 Unauthorized + INTMAX402 challenge
-   → {"error":"Unauthorized","protocol":"INTMAX402","mode":"identity"}
-   → nonce: a1b2c3d4e5f6g7h8...
-
-🔐 Step 2: Signing challenge with wallet 0x1234...
-   → Signed nonce & sent Authorization header
-
-✅ Step 3: GET /intelligence + Authorization
-   → 200 OK
-   → {
-       "intelligence": "🔐 CLASSIFIED: ...",
-       "accessedBy": "0x1234...abcd",
-       "timestamp": "2026-03-07T...",
-       "protocol": "INTMAX402"
-     }
-
-🎉 Demo complete! AI Agent authenticated via INTMAX402 protocol.
-```
-
----
-
-## INTMAX402 プロトコルについて / About INTMAX402
-
-**INTMAX402** は HTTP 402 Payment Required を拡張した AI エージェント向け認証・決済プロトコルです。
-
-| モード | 用途 | 仕組み |
-|--------|------|--------|
-| `identity` | 身元確認のみ | Ethereum 署名でウォレットアドレスを証明 |
-| `payment` | 実際の支払い | INTMAX2 ZK ロールアップで少額決済 |
-
-### エンドポイント構成
-
-| エンドポイント | 認証 | 説明 |
-|----------------|------|------|
-| `GET /free` | 不要 | 誰でもアクセス可能 |
-| `GET /intelligence` | intmax402 identity | 署名付き Ethereum ウォレットが必要 |
-
-### パッケージ
-
-- **`@tanakayuto/intmax402-express`** — Express ミドルウェア（サーバー側）
-- **`@tanakayuto/intmax402-client`** — 自動認証クライアント（エージェント側）
-- GitHub: https://github.com/zaq2989/intmax402
-
----
-
-## ファイル構成 / Structure
-
-```
-demo/
-├── server.js      # Agent B — intmax402 で保護された API サーバー (port 3770)
-├── client.js      # Agent A — 自動認証クライアント
-├── run-demo.sh    # デモ実行スクリプト
-├── package.json   # ESM + 依存パッケージ
-└── README.md      # このファイル
-```
+1. Edit `payment-server.js` and `payment-demo.js`: set `environment: "testnet"` and `L1_RPC: "https://ethereum-sepolia-rpc.publicnode.com"`
+2. Get Sepolia ETH: https://sepoliafaucet.com
+3. Deposit to INTMAX testnet: https://intmax.io
+4. Run same commands above

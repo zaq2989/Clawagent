@@ -26,6 +26,7 @@ const verifyRouter = require('./routes/verify');
 const adminRouter = require('./routes/admin');
 const webhooksRouter = require('./routes/webhooks');
 const bountiesRouter = require('./routes/bounties');
+const dnsRouter = require('./routes/dns');
 const { swaggerUi, swaggerSpec } = require('./swagger');
 
 const app = express();
@@ -101,6 +102,9 @@ app.get('/api/circuit-breaker/status', (req, res) => {
   res.json({ ok: true, agents: circuitBreaker.getAgentStatuses(db), ...circuitBreaker.getStatus() });
 });
 
+// Claw Network Agent DNS — GET /resolve?capability=...
+app.use('/', dnsRouter);
+
 // API routes (auth handled inside each router)
 app.use('/api/agents', agentsRouter);
 app.use('/api/tasks', tasksRouter);
@@ -149,6 +153,6 @@ try {
   console.error('MCP router failed to mount:', err.message);
 }
 
-app.listen(PORT, () => {
+app.listen(PORT, '127.0.0.1', () => {
   console.log(`ClawAgent MVP running on http://localhost:${PORT}`);
 });

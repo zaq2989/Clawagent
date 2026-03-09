@@ -2,49 +2,110 @@
 // Uses SELECT-before-INSERT since agents.name has no UNIQUE constraint
 const crypto = require('crypto');
 
+const DEFAULT_PRICING = { mode: 'per_call', price_per_call: 0.001, currency: 'ETH' };
+
 const SEED_AGENTS = [
-  { name: 'Scout',           type: 'ai', capabilities: ['osint','search','reconnaissance'],                                          bond: 100, rep: 65 },
-  { name: 'Scraper',         type: 'ai', capabilities: ['web_scraping','data_extraction','crawling'],                                bond: 80,  rep: 58 },
-  { name: 'Analyst',         type: 'ai', capabilities: ['analysis','reporting','data_processing'],                                   bond: 120, rep: 72 },
-  { name: 'Coder',           type: 'ai', capabilities: ['code_generation','debugging','code_review','refactoring'],                  bond: 200, rep: 85 },
-  { name: 'Researcher',      type: 'ai', capabilities: ['web_research','fact_checking','literature_review','summarization'],         bond: 150, rep: 78 },
-  { name: 'Writer',          type: 'ai', capabilities: ['content_writing','copywriting','translation','proofreading'],               bond: 100, rep: 71 },
-  { name: 'DataAnalyst',     type: 'ai', capabilities: ['data_analysis','visualization','statistics','reporting'],                   bond: 180, rep: 82 },
-  { name: 'SecurityAuditor', type: 'ai', capabilities: ['security_audit','penetration_testing','vulnerability_assessment','compliance'], bond: 250, rep: 90 },
-  { name: 'Translator',      type: 'ai', capabilities: ['translation','localization','multilingual','japanese','english'],           bond: 80,  rep: 75 },
-  { name: 'Planner',         type: 'ai', capabilities: ['project_planning','task_breakdown','scheduling','coordination'],            bond: 120, rep: 80 },
+  {
+    name: 'Scout',
+    type: 'ai',
+    capabilities: ['scrape.web.product', 'scrape.web.news'],
+    bond: 100, rep: 65,
+  },
+  {
+    name: 'Analyst',
+    type: 'ai',
+    capabilities: ['analyze.market.crypto', 'analyze.data.general'],
+    bond: 120, rep: 72,
+  },
+  {
+    name: 'Researcher',
+    type: 'ai',
+    capabilities: ['summarize.text.longform', 'extract.document.invoice'],
+    bond: 150, rep: 78,
+  },
+  {
+    name: 'Writer',
+    type: 'ai',
+    capabilities: ['translate.text.en-ja', 'summarize.text.shortform'],
+    bond: 100, rep: 71,
+  },
+  {
+    name: 'Coder',
+    type: 'ai',
+    capabilities: ['review.code.general', 'generate.code.snippet'],
+    bond: 200, rep: 85,
+  },
+  {
+    name: 'DataAnalyst',
+    type: 'ai',
+    capabilities: ['analyze.data.csv', 'analyze.data.timeseries'],
+    bond: 180, rep: 82,
+  },
+  {
+    name: 'SecurityAuditor',
+    type: 'ai',
+    capabilities: ['review.code.security', 'review.legal.contract'],
+    bond: 250, rep: 90,
+  },
+  {
+    name: 'Translator',
+    type: 'ai',
+    capabilities: ['translate.text.en-ja', 'translate.text.ja-en', 'translate.text.en-zh'],
+    bond: 80,  rep: 75,
+  },
+  {
+    name: 'Planner',
+    type: 'ai',
+    capabilities: ['plan.project.roadmap', 'plan.task.breakdown'],
+    bond: 120, rep: 80,
+  },
+  {
+    name: 'Scraper',
+    type: 'ai',
+    capabilities: ['scrape.web.ecommerce', 'extract.document.pdf'],
+    bond: 80,  rep: 58,
+  },
 ];
 
 function seedAgents(db) {
-  const exists = db.prepare('SELECT id FROM agents WHERE name = ? LIMIT 1');
-  const insert = db.prepare(`
-    INSERT INTO agents (id, name, type, capabilities, bond_amount, reputation_score, status, created_at, webhook_url)
-    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, '')
+  const existsStmt  = db.prepare('SELECT id FROM agents WHERE name = ? LIMIT 1');
+  const insertStmt  = db.prepare(`
+    INSERT INTO agents (id, name, type, capabilities, pricing, input_schema, output_schema, bond_amount, reputation_score, success_rate, latency_ms, call_count, status, created_at, webhook_url)
+    VALUES (?, ?, ?, ?, ?, '{}', '{}', ?, ?, 1.0, 1000, 0, 'active', ?, '')
+  `);
+  const updateStmt  = db.prepare(`
+    UPDATE agents SET capabilities = ?, pricing = ? WHERE name = ?
   `);
 
-  let count = 0;
+  let inserted = 0;
+  let updated  = 0;
+
   for (const agent of SEED_AGENTS) {
-    const row = exists.get(agent.name);
+    const capsJson   = JSON.stringify(agent.capabilities);
+    const pricingJson = JSON.stringify(DEFAULT_PRICING);
+    const row = existsStmt.get(agent.name);
     if (!row) {
-      const id = crypto.randomUUID();
-      insert.run(
-        id,
+      insertStmt.run(
+        crypto.randomUUID(),
         agent.name,
         agent.type,
-        JSON.stringify(agent.capabilities),
+        capsJson,
+        pricingJson,
         agent.bond,
         agent.rep,
         Date.now()
       );
-      count++;
+      inserted++;
+    } else {
+      // Update capabilities & pricing to Claw Network format
+      updateStmt.run(capsJson, pricingJson, agent.name);
+      updated++;
     }
   }
 
-  if (count > 0) {
-    console.log(`[seed] ${count} agents seeded`);
-  } else {
-    console.log('[seed] All agents already exist');
-  }
+  if (inserted > 0) console.log(`[seed] ${inserted} agents inserted`);
+  if (updated  > 0) console.log(`[seed] ${updated} agents updated with Claw Network capabilities`);
+  if (inserted === 0 && updated === 0) console.log('[seed] No changes needed');
 }
 
 module.exports = { seedAgents };

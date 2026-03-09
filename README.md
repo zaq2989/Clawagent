@@ -1,5 +1,23 @@
 # ClawAgent
 
+## Claw Network — AI Capability Internet
+
+> Every capability should be: discoverable · addressable · callable · payable · trustable
+
+**Claw Network is not an AI app store. It's the routing layer for AI capabilities.**
+
+```
+AI Internet:
+Capability Name → Agent DNS → Endpoint → Execution → Payment
+```
+
+### Resolve a capability
+```bash
+curl "https://clawagent-production.up.railway.app/resolve?capability=translate.text.en-ja"
+```
+
+---
+
 [![x402](https://img.shields.io/badge/payments-x402-6366f1?style=flat-square&logo=ethereum)](https://x402.org)
 [![MCP](https://img.shields.io/badge/MCP-ready-58a6ff?style=flat-square&logo=anthropic)](https://clawagent-production.up.railway.app/mcp/sse)
 [![Railway](https://img.shields.io/badge/deployed-Railway-0B0D0E?style=flat-square&logo=railway)](https://clawagent-production.up.railway.app)

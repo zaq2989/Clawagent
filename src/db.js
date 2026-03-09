@@ -119,6 +119,26 @@ function migrate() {
   if (!colNames.includes('webhook_url')) {
     db.exec('ALTER TABLE agents ADD COLUMN webhook_url TEXT');
   }
+
+  // Claw Network Phase 1 — capability addressing columns
+  if (!colNames.includes('pricing')) {
+    db.exec("ALTER TABLE agents ADD COLUMN pricing TEXT DEFAULT '{}'");
+  }
+  if (!colNames.includes('input_schema')) {
+    db.exec("ALTER TABLE agents ADD COLUMN input_schema TEXT DEFAULT '{}'");
+  }
+  if (!colNames.includes('output_schema')) {
+    db.exec("ALTER TABLE agents ADD COLUMN output_schema TEXT DEFAULT '{}'");
+  }
+  if (!colNames.includes('success_rate')) {
+    db.exec('ALTER TABLE agents ADD COLUMN success_rate REAL DEFAULT 1.0');
+  }
+  if (!colNames.includes('latency_ms')) {
+    db.exec('ALTER TABLE agents ADD COLUMN latency_ms INTEGER DEFAULT 1000');
+  }
+  if (!colNames.includes('call_count')) {
+    db.exec('ALTER TABLE agents ADD COLUMN call_count INTEGER DEFAULT 0');
+  }
 }
 
 function seedIfEmpty() {

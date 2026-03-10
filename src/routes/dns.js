@@ -160,99 +160,123 @@ router.post('/call', async (req, res) => {
     });
   }
 
-  const provider = providers[0];
-  const baseResponse = {
+  const timeoutMs = (typeof timeout_ms === 'number' && timeout_ms > 0) ? timeout_ms : 5000;
+
+  // Helper: fetch a provider endpoint with timeout
+  async function fetchWithTimeout(endpoint, capabilityName, inputData, ms) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+      const providerRes = await fetch(endpoint, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ capability: capabilityName, input: inputData || {} }),
+        signal:  controller.signal,
+      });
+      clearTimeout(timer);
+      return providerRes;
+    } catch (err) {
+      clearTimeout(timer);
+      throw err;
+    }
+  }
+
+  // Try each ranked provider in order, falling back on error/timeout
+  let lastError = null;
+  for (const provider of providers) {
+    const baseResponse = {
+      capability: canonical,
+      ...(resolvedFrom && { resolved_from: resolvedFrom }),
+      provider: {
+        agent_id:       provider.agent_id,
+        name:           provider.name,
+        price_per_call: provider.price_per_call,
+      },
+    };
+
+    // No endpoint — try built-in, then skip to next provider
+    if (!provider.endpoint) {
+      const builtinFn = BUILTINS[canonical];
+      if (builtinFn) {
+        try {
+          const output = await builtinFn(input || {});
+          return res.json({ ...baseResponse, output, status: 'builtin' });
+        } catch (err) {
+          return res.status(500).json({ ...baseResponse, output: null, status: 'builtin_error', message: err.message });
+        }
+      }
+      // No builtin either — continue to next provider
+      continue;
+    }
+
+    // SSRF guard
+    const ssrfCheck = checkSafeUrl(provider.endpoint);
+    if (!ssrfCheck.safe) {
+      console.error(`[SSRF BLOCKED] agent=${provider.agent_id} endpoint=${provider.endpoint} reason=${ssrfCheck.reason}`);
+      // Skip this provider
+      continue;
+    }
+
+    const startMs = Date.now();
+    try {
+      const providerRes = await fetchWithTimeout(provider.endpoint, canonical, input, timeoutMs);
+      const latency = Date.now() - startMs;
+      const output = await providerRes.json();
+      const success = providerRes.ok;
+
+      // Fire-and-forget reputation update (success)
+      _updateReputation(provider.agent_id, success, latency).catch(() => {});
+
+      return res.json({
+        ...baseResponse,
+        output,
+        latency_ms: latency,
+        status: success ? 'success' : 'provider_error',
+      });
+    } catch (err) {
+      const latency = Date.now() - startMs;
+      // Fire-and-forget reputation update (failure)
+      _updateReputation(provider.agent_id, false, latency).catch(() => {});
+      lastError = err;
+      // Continue to next provider
+      console.warn(`[FALLBACK] provider=${provider.agent_id} failed (${err.name === 'AbortError' ? 'timeout' : err.message}), trying next...`);
+      continue;
+    }
+  }
+
+  // All providers failed — fall back to built-in
+  const builtinFn = BUILTINS[canonical];
+  if (builtinFn) {
+    try {
+      const output = await builtinFn(input || {});
+      return res.json({
+        capability: canonical,
+        ...(resolvedFrom && { resolved_from: resolvedFrom }),
+        provider: { agent_id: 'builtin', name: 'ClawBuiltin', price_per_call: 0 },
+        output,
+        status: 'builtin_fallback',
+        message: 'All registered providers failed; served by built-in.',
+      });
+    } catch (err) {
+      return res.status(500).json({
+        ok: false,
+        capability: canonical,
+        ...(resolvedFrom && { resolved_from: resolvedFrom }),
+        output: null,
+        status: 'builtin_error',
+        message: err.message,
+      });
+    }
+  }
+
+  // Nothing worked
+  return res.status(502).json({
+    ok: false,
     capability: canonical,
     ...(resolvedFrom && { resolved_from: resolvedFrom }),
-    provider: {
-      agent_id:      provider.agent_id,
-      name:          provider.name,
-      price_per_call: provider.price_per_call,
-    },
-  };
-
-  // No endpoint — try built-in executor first, then return no_endpoint
-  if (!provider.endpoint) {
-    const builtinFn = BUILTINS[canonical];
-    if (builtinFn) {
-      try {
-        const output = await builtinFn(input || {});
-        return res.json({
-          ...baseResponse,
-          output,
-          status: 'builtin',
-        });
-      } catch (err) {
-        return res.status(500).json({
-          ...baseResponse,
-          output:  null,
-          status:  'builtin_error',
-          message: err.message,
-        });
-      }
-    }
-    return res.json({
-      ...baseResponse,
-      output:   null,
-      status:   'no_endpoint',
-      message:  'Provider found but has no execution endpoint. Register an endpoint to enable direct execution.',
-      resolved: true,
-    });
-  }
-
-  // SSRF guard: validate endpoint before forwarding
-  const ssrfCheck = checkSafeUrl(provider.endpoint);
-  if (!ssrfCheck.safe) {
-    console.error(`[SSRF BLOCKED] agent=${provider.agent_id} endpoint=${provider.endpoint} reason=${ssrfCheck.reason}`);
-    return res.status(502).json({
-      ...baseResponse,
-      output: null,
-      status: 'endpoint_blocked',
-      message: 'Provider endpoint failed security validation and was blocked.',
-    });
-  }
-
-  // Forward to provider endpoint
-  const timeoutMs = (typeof timeout_ms === 'number' && timeout_ms > 0) ? timeout_ms : 5000;
-  const startMs = Date.now();
-
-  let output, success;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-    const providerRes = await fetch(provider.endpoint, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ capability: canonical, input: input || {} }),
-      signal:  controller.signal,
-    });
-    clearTimeout(timer);
-
-    output = await providerRes.json();
-    success = providerRes.ok;
-  } catch (err) {
-    const latency = Date.now() - startMs;
-    // Fire-and-forget reputation update for failure
-    _updateReputation(provider.agent_id, false, latency).catch(() => {});
-    return res.status(502).json({
-      ...baseResponse,
-      output:  null,
-      status:  err.name === 'AbortError' ? 'timeout' : 'error',
-      message: err.name === 'AbortError' ? `Provider timed out after ${timeoutMs}ms` : err.message,
-    });
-  }
-
-  const latency = Date.now() - startMs;
-
-  // Fire-and-forget reputation update
-  _updateReputation(provider.agent_id, success, latency).catch(() => {});
-
-  res.json({
-    ...baseResponse,
-    output,
-    latency_ms: latency,
-    status: success ? 'success' : 'provider_error',
+    output: null,
+    status: lastError?.name === 'AbortError' ? 'timeout' : 'error',
+    message: lastError ? (lastError.name === 'AbortError' ? `All providers timed out after ${timeoutMs}ms` : lastError.message) : 'All providers failed',
   });
 });
 

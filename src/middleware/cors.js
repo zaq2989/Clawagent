@@ -21,7 +21,7 @@ function parseOrigin(raw) {
 const corsOptions = {
   origin: parseOrigin(ALLOWED_ORIGIN),
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Requested-With'],
   exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'],
   credentials: ALLOWED_ORIGIN !== '*', // credentials only when origin is specific
   maxAge: 86400, // 24h preflight cache

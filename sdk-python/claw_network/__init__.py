@@ -6,9 +6,11 @@ from typing import Optional, Any
 DEFAULT_BASE_URL = "https://clawagent-production.up.railway.app"
 
 class ClawNetwork:
-    def __init__(self, base_url: str = DEFAULT_BASE_URL, api_key: Optional[str] = None):
+    def __init__(self, base_url: str = DEFAULT_BASE_URL, api_key: Optional[str] = None,
+                 private_key: Optional[str] = None):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.private_key = private_key  # client-side payer key
         self._client = httpx.Client(timeout=30.0)
 
     def _headers(self) -> dict:
@@ -23,8 +25,28 @@ class ClawNetwork:
         r.raise_for_status()
         return r.json()
 
+    def _post(self, path: str, body: dict) -> dict:
+        r = self._client.post(f"{self.base_url}{path}", json=body, headers=self._headers())
+        r.raise_for_status()
+        return r.json()
+
+    def _create_payment_proof(self, www_authenticate: str) -> str:
+        """Sign payment using eth_account (pip install eth-account)."""
+        try:
+            from eth_account import Account
+            import json, base64, time
+            account = Account.from_key(self.private_key)
+            payload = json.dumps({"from": account.address, "www_authenticate": www_authenticate,
+                                  "timestamp": int(time.time())})
+            signed = account.sign_message(payload.encode())
+            return base64.b64encode(
+                json.dumps({"payload": payload, "signature": signed.signature.hex()}).encode()
+            ).decode()
+        except ImportError:
+            raise ImportError("pip install eth-account required for payment support")
+
     def call(self, capability: str, input: dict = {}, budget: Optional[float] = None,
-             timeout_ms: int = 5000, payer: Optional[dict] = None) -> dict:
+             timeout_ms: int = 5000, **kwargs) -> dict:
         """Call a capability and return the result.
 
         Args:
@@ -32,18 +54,22 @@ class ClawNetwork:
             input:      Payload forwarded to the provider.
             budget:     Max price_per_call in ETH to filter providers.
             timeout_ms: Provider call timeout in milliseconds.
-            payer:      Payment config for x402-gated providers.
-                        Example: {"key_env": "MY_AGENT_PRIVATE_KEY"}
-                        The Claw Network node reads the private key from that env var.
+
+        If the server returns payment_required and self.private_key is set,
+        the SDK automatically signs the payment and retries (client-side flow).
         """
         body = {"capability": capability, "input": input, "timeout_ms": timeout_ms}
         if budget is not None:
             body["budget"] = budget
-        if payer is not None:
-            body["payer"] = payer
-        r = self._client.post(f"{self.base_url}/call", json=body, headers=self._headers())
-        r.raise_for_status()
-        return r.json()
+
+        result = self._post("/call", body)
+
+        # Client-side payment: sign and retry
+        if result.get("status") == "payment_required" and result.get("www_authenticate") and self.private_key:
+            payment_proof = self._create_payment_proof(result["www_authenticate"])
+            result = self._post("/call", {**body, "payment_proof": payment_proof})
+
+        return result
 
     def call_async(self, capability: str, input: dict = {}, budget: Optional[float] = None) -> dict:
         """Start an async capability call. Returns job_id."""

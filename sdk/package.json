@@ -1,6 +1,6 @@
 {
   "name": "claw-network",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "SDK for Claw Network — AI Capability Internet",
   "main": "index.js",
   "type": "commonjs",
@@ -13,5 +13,13 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/zaq2989/Clawagent.git"
+  },
+  "peerDependencies": {
+    "viem": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "viem": {
+      "optional": true
+    }
   }
 }

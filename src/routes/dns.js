@@ -384,10 +384,10 @@ router.get('/search', async (req, res) => {
 
 /**
  * Core call logic — shared between POST /call and POST /call/async
- * @param {object} opts  { capability (raw), input, budget, timeout_ms, payerConfig }
+ * @param {object} opts  { capability (raw), input, budget, timeout_ms, payment_proof }
  * @returns {Promise<{ status, output, provider, capability, resolved_from? }>}
  */
-async function resolveAndCall({ capability: raw, input, budget, timeout_ms, payerConfig = null }) {
+async function resolveAndCall({ capability: raw, input, budget, timeout_ms, payment_proof = null }) {
   if (!raw) throw Object.assign(new Error('capability is required'), { statusCode: 400 });
 
   const { canonical, resolvedFrom, version } = resolveCapabilityName(raw);
@@ -434,11 +434,14 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paye
 
   const timeoutMs = (typeof timeout_ms === 'number' && timeout_ms > 0) ? timeout_ms : 5000;
 
-  // Helper: fetch a provider endpoint with timeout, handling x402 payment if needed.
-  // Returns { response, paymentInfo } where paymentInfo is non-null when a payment was made.
+  // Helper: fetch a provider endpoint with timeout.
+  // If the provider returns 402:
+  //   - If payment_proof is provided, retry with X-PAYMENT header.
+  //   - Otherwise, return a structured payment_required result (not an error).
+  // Returns { response, paymentMade } or throws on network/timeout errors.
   async function fetchWithTimeout(endpoint, capabilityName, inputData, ms) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), ms);
+    const timeoutId = setTimeout(() => controller.abort(), ms);
     const reqBody = JSON.stringify({ capability: capabilityName, input: inputData || {} });
 
     try {
@@ -451,63 +454,43 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paye
 
       // ── x402 payment handling ──────────────────────────────────────────────
       if (providerRes.status === 402) {
-        if (!payerConfig?.privateKey) {
-          // No payer configured — surface a helpful error
-          clearTimeout(timer);
-          const err = Object.assign(
-            new Error('Provider requires payment. Include payer in request.'),
-            {
-              statusCode: 402,
-              body: {
-                status:  'payment_required',
-                message: 'Provider requires payment. Include payer in request.',
-                hint:    'Add "payer": {"key_env": "YOUR_PRIVATE_KEY_ENV_VAR"} to request body',
-              },
-            }
-          );
-          throw err;
-        }
-
         const wwwAuth = providerRes.headers.get('www-authenticate') || '';
-        try {
-          const { createX402PaymentHeader } = require('../payment/x402Client');
-          const { 'X-PAYMENT': xPayment, paymentInfo } =
-            await createX402PaymentHeader(wwwAuth, payerConfig.privateKey);
+        clearTimeout(timeoutId);
 
+        if (payment_proof) {
+          // Retry with client-supplied payment proof as X-PAYMENT header
+          const retryController = new AbortController();
+          const retryTimer = setTimeout(() => retryController.abort(), ms);
           providerRes = await fetch(endpoint, {
             method:  'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-PAYMENT': xPayment,
+              'X-PAYMENT': payment_proof,
             },
             body:   reqBody,
-            signal: controller.signal,
+            signal: retryController.signal,
           });
-
-          clearTimeout(timer);
-          return { response: providerRes, paymentInfo };
-        } catch (payErr) {
-          clearTimeout(timer);
-          if (payErr.body) throw payErr; // already structured
-          const err = Object.assign(
-            new Error(`x402 payment failed: ${payErr.message}`),
-            {
-              statusCode: 402,
-              body: {
-                status:  'payment_failed',
-                message: `x402 payment failed: ${payErr.message}`,
-              },
-            }
-          );
-          throw err;
+          clearTimeout(retryTimer);
+          return { response: providerRes, paymentMade: true };
         }
+
+        // No payment_proof — signal caller to return payment_required to SDK
+        const err = Object.assign(
+          new Error('payment_required'),
+          {
+            statusCode: 402,
+            paymentRequired: true,
+            wwwAuthenticate: wwwAuth,
+          }
+        );
+        throw err;
       }
       // ──────────────────────────────────────────────────────────────────────
 
-      clearTimeout(timer);
-      return { response: providerRes, paymentInfo: null };
+      clearTimeout(timeoutId);
+      return { response: providerRes, paymentMade: false };
     } catch (err) {
-      clearTimeout(timer);
+      clearTimeout(timeoutId);
       throw err;
     }
   }
@@ -537,7 +520,7 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paye
 
     const startMs = Date.now();
     try {
-      const { response: providerRes, paymentInfo } =
+      const { response: providerRes, paymentMade } =
         await fetchWithTimeout(provider.endpoint, canonical, input, timeoutMs);
       const latency = Date.now() - startMs;
       const output = await providerRes.json();
@@ -550,11 +533,19 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paye
         output,
         latency_ms: latency,
         status: providerRes.ok ? 'success' : 'provider_error',
-        ...(paymentInfo ? { payment: { paid: true, ...paymentInfo } } : {}),
+        ...(paymentMade ? { payment: { paid: true, network: 'base-sepolia' } } : {}),
       };
     } catch (err) {
-      // Structured errors (402 payment_required / payment_failed) bubble up immediately
-      if (err.body) throw err;
+      // 402: provider wants payment — return payment_required to SDK (client-side signing)
+      if (err.paymentRequired) {
+        return {
+          ...baseInfo,
+          provider: providerInfo,
+          status: 'payment_required',
+          www_authenticate: err.wwwAuthenticate,
+          retry_hint: 'Sign payment and retry with payment_proof field',
+        };
+      }
 
       const latency = Date.now() - startMs;
       _updateReputation(provider.agent_id, false, latency).catch(() => {});
@@ -586,35 +577,14 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paye
 
 // POST /call
 router.post('/call', async (req, res) => {
-  const { capability: raw, input, budget, timeout_ms, payer } = req.body;
+  const { capability: raw, input, budget, timeout_ms, payment_proof } = req.body;
 
   if (!raw) {
     return res.status(400).json({ ok: false, error: 'capability is required' });
   }
 
-  // Resolve payer private key from environment variable (never accept raw keys).
-  // Supports both payer.key_env (new) and payer.private_key_env (legacy).
-  let payerConfig = null;
-  const keyEnvName = payer?.key_env || payer?.private_key_env;
-  if (keyEnvName) {
-    const pk = process.env[keyEnvName];
-    if (pk) {
-      payerConfig = {
-        privateKey:  pk,
-        environment: payer.environment || 'mainnet',
-      };
-    } else {
-      // Key env var specified but not found — return early with clear error
-      return res.status(402).json({
-        status:  'payment_required',
-        message: `Payer key not found in environment: ${keyEnvName}`,
-        hint:    `Set the ${keyEnvName} environment variable to a 0x-prefixed private key`,
-      });
-    }
-  }
-
   try {
-    const result = await resolveAndCall({ capability: raw, input, budget, timeout_ms, payerConfig });
+    const result = await resolveAndCall({ capability: raw, input, budget, timeout_ms, payment_proof });
     return res.json(result);
   } catch (err) {
     if (err.body) {

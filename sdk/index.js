@@ -4,6 +4,7 @@ class ClawNetwork {
   constructor(options = {}) {
     this.baseUrl = options.baseUrl || DEFAULT_BASE_URL;
     this.apiKey = options.apiKey || null;
+    this.privateKey = options.privateKey || null; // client-side payer key
   }
 
   async resolve(capability) {
@@ -15,19 +16,57 @@ class ClawNetwork {
     const body = { capability, input };
     if (options.budget)     body.budget     = options.budget;
     if (options.timeout_ms) body.timeout_ms = options.timeout_ms;
-    // payer: { key_env: "MY_PRIVATE_KEY_ENV_VAR" }
-    // The Claw Network node will read the private key from that env var server-side.
-    if (options.payer)      body.payer      = options.payer;
 
     const headers = { 'Content-Type': 'application/json' };
     if (this.apiKey) headers['X-API-Key'] = this.apiKey;
 
-    const res = await fetch(`${this.baseUrl}/call`, {
+    // 1st request
+    let res = await fetch(`${this.baseUrl}/call`, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
     });
-    return res.json();
+    let result = await res.json();
+
+    // If payment_required and we have a privateKey, sign and retry
+    if (result.status === 'payment_required' && result.www_authenticate && this.privateKey) {
+      const paymentProof = await this._createPaymentProof(result.www_authenticate);
+
+      res = await fetch(`${this.baseUrl}/call`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ ...body, payment_proof: paymentProof }),
+      });
+      result = await res.json();
+    }
+
+    return result;
+  }
+
+  async _createPaymentProof(wwwAuthenticate) {
+    try {
+      const { privateKeyToAccount } = await import('viem/accounts');
+
+      const account = privateKeyToAccount(this.privateKey);
+
+      // Parse WWW-Authenticate params
+      const params = {};
+      const matches = wwwAuthenticate.matchAll(/(\w+)="([^"]*)"/g);
+      for (const [, key, value] of matches) params[key] = value;
+
+      // x402 simplified: encode address + signature as base64
+      const payload = JSON.stringify({
+        from: account.address,
+        www_authenticate: wwwAuthenticate,
+        timestamp: Date.now(),
+      });
+
+      const signature = await account.signMessage({ message: payload });
+
+      return Buffer.from(JSON.stringify({ payload, signature })).toString('base64');
+    } catch (e) {
+      throw new Error(`Payment signing failed: ${e.message}`);
+    }
   }
 
   async listAgents(capability) {

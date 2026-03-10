@@ -83,7 +83,7 @@ function getProviders(capability, budget, version = null) {
   const db = getDb();
 
   const agents = db.prepare(
-    "SELECT id, name, endpoint, status, capabilities, pricing, reputation_score, success_rate, latency_ms, webhook_url, owner_address, verified, capability_version, payment_methods FROM agents WHERE status = 'active'"
+    "SELECT id, name, status, capabilities, pricing, reputation_score, success_rate, latency_ms, webhook_url, owner_address, verified, capability_version, payment_methods FROM agents WHERE status = 'active'"
   ).all();
 
   const allMatching = [];

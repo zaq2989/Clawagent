@@ -167,6 +167,11 @@ function migrate() {
   if (!colNames.includes('capability_version')) {
     db.exec("ALTER TABLE agents ADD COLUMN capability_version TEXT DEFAULT 'v1'");
   }
+
+  // Claw Network Phase 5 — Multi-Payment Layer
+  if (!colNames.includes('payment_methods')) {
+    db.exec("ALTER TABLE agents ADD COLUMN payment_methods TEXT DEFAULT '[\"x402\"]'");
+  }
 }
 
 function seedIfEmpty() {

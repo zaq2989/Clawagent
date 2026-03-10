@@ -8,6 +8,7 @@ const { getDb } = require('../db');
 const { BUILTINS } = require('../builtins');
 const { checkSafeUrl } = require('../utils/ssrf');
 const { ADMIN_TOKEN } = require('../config/auth');
+const { detectScheme } = require('../payment/router');
 
 const router = express.Router();
 
@@ -82,7 +83,7 @@ function getProviders(capability, budget, version = null) {
   const db = getDb();
 
   const agents = db.prepare(
-    "SELECT id, name, status, capabilities, pricing, reputation_score, success_rate, latency_ms, webhook_url, owner_address, verified, capability_version FROM agents WHERE status = 'active'"
+    "SELECT id, name, status, capabilities, pricing, reputation_score, success_rate, latency_ms, webhook_url, owner_address, verified, capability_version, payment_methods FROM agents WHERE status = 'active'"
   ).all();
 
   const allMatching = [];
@@ -102,6 +103,9 @@ function getProviders(capability, budget, version = null) {
     const pricePerCall = pricing.price_per_call || 0;
     const score = calcScore(agent, pricing);
 
+    let paymentMethods = ['x402'];
+    try { paymentMethods = JSON.parse(agent.payment_methods || '["x402"]'); } catch (_) {}
+
     allMatching.push({
       agent_id:           agent.id,
       name:               agent.name,
@@ -115,6 +119,7 @@ function getProviders(capability, budget, version = null) {
       verified:           agent.verified === 1,
       owner_address:      agent.owner_address || null,
       capability_version: agentVersion,
+      payment_methods:    paymentMethods,
       _score:             score,
     });
   }
@@ -387,7 +392,7 @@ router.get('/search', async (req, res) => {
  * @param {object} opts  { capability (raw), input, budget, timeout_ms, payment_proof }
  * @returns {Promise<{ status, output, provider, capability, resolved_from? }>}
  */
-async function resolveAndCall({ capability: raw, input, budget, timeout_ms, payment_proof = null }) {
+async function resolveAndCall({ capability: raw, input, budget, timeout_ms, payment_proof = null, payment_scheme = null }) {
   if (!raw) throw Object.assign(new Error('capability is required'), { statusCode: 400 });
 
   const { canonical, resolvedFrom, version } = resolveCapabilityName(raw);
@@ -458,29 +463,40 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
         clearTimeout(timeoutId);
 
         if (payment_proof) {
-          // Retry with client-supplied payment proof as X-PAYMENT header
+          // Determine payment header name based on scheme
+          const scheme = payment_scheme || detectScheme(wwwAuth);
+          let paymentHeaders = {};
+          if (scheme === 'xmr402' || scheme === 'intmax402') {
+            paymentHeaders['Authorization'] = payment_proof;
+          } else {
+            paymentHeaders['X-PAYMENT'] = payment_proof;
+          }
+
+          // Retry with client-supplied payment proof
           const retryController = new AbortController();
           const retryTimer = setTimeout(() => retryController.abort(), ms);
           providerRes = await fetch(endpoint, {
             method:  'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-PAYMENT': payment_proof,
+              ...paymentHeaders,
             },
             body:   reqBody,
             signal: retryController.signal,
           });
           clearTimeout(retryTimer);
-          return { response: providerRes, paymentMade: true };
+          return { response: providerRes, paymentMade: true, paymentScheme: scheme };
         }
 
         // No payment_proof — signal caller to return payment_required to SDK
+        const detectedScheme = detectScheme(wwwAuth);
         const err = Object.assign(
           new Error('payment_required'),
           {
             statusCode: 402,
             paymentRequired: true,
             wwwAuthenticate: wwwAuth,
+            paymentScheme: detectedScheme,
           }
         );
         throw err;
@@ -520,7 +536,7 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
 
     const startMs = Date.now();
     try {
-      const { response: providerRes, paymentMade } =
+      const { response: providerRes, paymentMade, paymentScheme } =
         await fetchWithTimeout(provider.endpoint, canonical, input, timeoutMs);
       const latency = Date.now() - startMs;
       const output = await providerRes.json();
@@ -533,7 +549,7 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
         output,
         latency_ms: latency,
         status: providerRes.ok ? 'success' : 'provider_error',
-        ...(paymentMade ? { payment: { paid: true, network: 'base-sepolia' } } : {}),
+        ...(paymentMade ? { payment: { paid: true, scheme: paymentScheme || 'x402' } } : {}),
       };
     } catch (err) {
       // 402: provider wants payment — return payment_required to SDK (client-side signing)
@@ -542,8 +558,10 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
           ...baseInfo,
           provider: providerInfo,
           status: 'payment_required',
+          payment_scheme: err.paymentScheme || 'x402',
           www_authenticate: err.wwwAuthenticate,
-          retry_hint: 'Sign payment and retry with payment_proof field',
+          supported_payment_methods: ['x402', 'xmr402', 'intmax402'],
+          retry_hint: 'Sign payment and retry with payment_proof and payment_scheme fields',
         };
       }
 
@@ -577,14 +595,14 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
 
 // POST /call
 router.post('/call', async (req, res) => {
-  const { capability: raw, input, budget, timeout_ms, payment_proof } = req.body;
+  const { capability: raw, input, budget, timeout_ms, payment_proof, payment_scheme } = req.body;
 
   if (!raw) {
     return res.status(400).json({ ok: false, error: 'capability is required' });
   }
 
   try {
-    const result = await resolveAndCall({ capability: raw, input, budget, timeout_ms, payment_proof });
+    const result = await resolveAndCall({ capability: raw, input, budget, timeout_ms, payment_proof, payment_scheme });
     return res.json(result);
   } catch (err) {
     if (err.body) {

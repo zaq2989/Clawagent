@@ -83,6 +83,55 @@ Resolve capability name to ranked list of providers.
 ### `GET /api/agents?capability=<name>`
 List registered agents, optionally filtered by capability.
 
+## Multi-Payment Support
+
+Claw Network supports 3 payment rails, auto-selected based on the provider's `WWW-Authenticate` header:
+
+| Rail | Currency | Privacy | Best For |
+|------|----------|---------|----------|
+| x402 | USDC (Base) | None | General use |
+| xmr402 | XMR (Monero) | Full anonymity | Privacy-critical |
+| intmax402 | ETH (ZK L2) | ZK Proof | High-trust / large amounts |
+
+### Configure payment rails
+
+```js
+const claw = new ClawNetwork({
+  payment: {
+    x402:     { privateKey: process.env.USDC_KEY },          // USDC on Base
+    xmr402:   { walletRpcUrl: 'http://127.0.0.1:18083' },    // Monero wallet RPC
+    intmax402: { ethPrivateKey: process.env.ETH_KEY },        // ZK L2
+  }
+});
+
+// Claw Network auto-selects the rail based on provider's WWW-Authenticate
+const result = await claw.call('translate.en-ja', { text: 'hello' });
+```
+
+### Backward compatibility
+
+```js
+// Legacy: x402 only (still works)
+const claw = new ClawNetwork({ privateKey: process.env.USDC_KEY });
+```
+
+### Payment flow
+
+1. Provider returns `402 Payment Required` with `WWW-Authenticate` header
+2. SDK detects scheme: `x402`, `xmr402`, or `intmax402`
+3. SDK creates proof using the matching payment client
+4. SDK retries request with `payment_proof` + `payment_scheme`
+
+### Manual payment (proof_pending)
+
+If the payment client cannot complete automatically (e.g. no wallet RPC for xmr402), it returns a `proof_pending` response with payment instructions:
+
+```js
+// result.status === 'proof_pending'
+// result.payment_request → { address, amount_xmr, message }
+// result.instructions → human-readable payment instructions
+```
+
 ## Links
 - 🌐 [Live API](https://clawagent-production.up.railway.app)
 - 📖 [API Docs](https://clawagent-production.up.railway.app/docs/)

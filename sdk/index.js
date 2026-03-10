@@ -4,7 +4,16 @@ class ClawNetwork {
   constructor(options = {}) {
     this.baseUrl = options.baseUrl || DEFAULT_BASE_URL;
     this.apiKey = options.apiKey || null;
-    this.privateKey = options.privateKey || null; // client-side payer key
+
+    // Multi-payment config
+    this.payment = options.payment || null;
+
+    // Backward compatibility: privateKey → x402
+    if (options.privateKey && !this.payment) {
+      this.payment = { x402: { privateKey: options.privateKey } };
+    }
+    // Also keep legacy privateKey reference
+    this.privateKey = options.privateKey || null;
   }
 
   async resolve(capability) {
@@ -28,14 +37,26 @@ class ClawNetwork {
     });
     let result = await res.json();
 
-    // If payment_required and we have a privateKey, sign and retry
-    if (result.status === 'payment_required' && result.www_authenticate && this.privateKey) {
-      const paymentProof = await this._createPaymentProof(result.www_authenticate);
+    // Auto-payment: handle payment_required
+    if (result.status === 'payment_required' && result.www_authenticate && this.payment) {
+      const proof = await this._createPaymentProof(
+        result.www_authenticate,
+        result.payment_scheme
+      );
 
+      if (proof.error) {
+        return { ...result, payment_error: proof.error };
+      }
+
+      // Retry with payment_proof and payment_scheme
       res = await fetch(`${this.baseUrl}/call`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ ...body, payment_proof: paymentProof }),
+        body: JSON.stringify({
+          ...body,
+          payment_proof: proof.header_value,
+          payment_scheme: proof.scheme,
+        }),
       });
       result = await res.json();
     }
@@ -43,30 +64,19 @@ class ClawNetwork {
     return result;
   }
 
-  async _createPaymentProof(wwwAuthenticate) {
+  async _createPaymentProof(wwwAuthenticate, scheme) {
+    // Try to use bundled paymentRouter first, then server-side router
+    let routePayment;
     try {
-      const { privateKeyToAccount } = await import('viem/accounts');
-
-      const account = privateKeyToAccount(this.privateKey);
-
-      // Parse WWW-Authenticate params
-      const params = {};
-      const matches = wwwAuthenticate.matchAll(/(\w+)="([^"]*)"/g);
-      for (const [, key, value] of matches) params[key] = value;
-
-      // x402 simplified: encode address + signature as base64
-      const payload = JSON.stringify({
-        from: account.address,
-        www_authenticate: wwwAuthenticate,
-        timestamp: Date.now(),
-      });
-
-      const signature = await account.signMessage({ message: payload });
-
-      return Buffer.from(JSON.stringify({ payload, signature })).toString('base64');
-    } catch (e) {
-      throw new Error(`Payment signing failed: ${e.message}`);
+      ({ routePayment } = require('./paymentRouter'));
+    } catch (_) {
+      try {
+        ({ routePayment } = require('../src/payment/router'));
+      } catch (e) {
+        throw new Error(`Payment router not available: ${e.message}`);
+      }
     }
+    return routePayment(wwwAuthenticate, this.payment);
   }
 
   async listAgents(capability) {

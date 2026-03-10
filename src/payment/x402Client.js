@@ -1,6 +1,6 @@
 'use strict';
 // src/payment/x402Client.js — viem-based x402 payment client
-// Parses WWW-Authenticate: x402 headers and produces X-PAYMENT headers via EIP-712 signing
+// Supports both the legacy createX402PaymentHeader API and the new createX402Proof API
 
 const { privateKeyToAccount } = require('viem/accounts');
 const { createWalletClient, http } = require('viem');
@@ -8,7 +8,6 @@ const { baseSepolia, base } = require('viem/chains');
 
 /**
  * Parse a "x402 key="value", key2="value2"" style WWW-Authenticate header.
- * Returns an object of key → value pairs.
  */
 function parseWWWAuthenticate(header) {
   const params = {};
@@ -20,12 +19,37 @@ function parseWWWAuthenticate(header) {
 }
 
 /**
- * Given a WWW-Authenticate: x402 header and a private key (0x-prefixed hex),
- * creates an EIP-712 signed X-PAYMENT header payload and returns:
- *   { 'X-PAYMENT': <base64 string>, paymentInfo: { amount, currency, network, payer } }
- *
- * Falls back gracefully if the header doesn't contain base64-encoded payment data —
- * in that case it emits a minimal placeholder payload so the request can proceed.
+ * New API: createX402Proof
+ * Returns { proof, scheme, payer, header_value }
+ * header_value is the base64 string for the X-PAYMENT header.
+ */
+async function createX402Proof(wwwAuthenticate, privateKey) {
+  const account = privateKeyToAccount(privateKey);
+
+  const params = parseWWWAuthenticate(wwwAuthenticate || '');
+
+  const message = {
+    from: account.address,
+    scheme: 'x402',
+    params,
+    timestamp: Date.now(),
+  };
+
+  const signature = await account.signMessage({ message: JSON.stringify(message) });
+
+  const proof = Buffer.from(JSON.stringify({ message, signature })).toString('base64');
+
+  return {
+    proof,
+    scheme: 'x402',
+    payer: account.address,
+    header_value: proof,
+  };
+}
+
+/**
+ * Legacy API: createX402PaymentHeader
+ * Kept for backward compatibility with existing code.
  */
 async function createX402PaymentHeader(wwwAuthHeader, privateKey) {
   const params = parseWWWAuthenticate(wwwAuthHeader || '');
@@ -36,7 +60,6 @@ async function createX402PaymentHeader(wwwAuthHeader, privateKey) {
   const account = privateKeyToAccount(privateKey);
   const client = createWalletClient({ account, chain, transport: http() });
 
-  // Try to decode a base64-encoded payment requirements payload
   const paymentRequiredB64 = params.payment_required || params.paymentRequired || '';
 
   let paymentRequired = null;
@@ -48,12 +71,11 @@ async function createX402PaymentHeader(wwwAuthHeader, privateKey) {
         Buffer.from(paymentRequiredB64, 'base64').toString('utf8')
       );
     } catch (_) {
-      // ignore parse error — will fall through to minimal payload
+      // ignore parse error
     }
   }
 
   if (paymentRequired?.domain && paymentRequired?.types && paymentRequired?.primaryType) {
-    // Full EIP-712 signing path
     signature = await client.signTypedData({
       domain:      paymentRequired.domain,
       types:       paymentRequired.types,
@@ -61,7 +83,6 @@ async function createX402PaymentHeader(wwwAuthHeader, privateKey) {
       message:     paymentRequired.message || {},
     });
   } else {
-    // Minimal path: sign a simple message hash so the header is still valid
     signature = await client.signMessage({ message: 'x402-payment' });
   }
 
@@ -84,4 +105,4 @@ async function createX402PaymentHeader(wwwAuthHeader, privateKey) {
   };
 }
 
-module.exports = { createX402PaymentHeader, parseWWWAuthenticate };
+module.exports = { createX402Proof, createX402PaymentHeader, parseWWWAuthenticate };

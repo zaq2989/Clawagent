@@ -3,7 +3,14 @@ const { getDb } = require('../db');
 const { circuitBreaker } = require('../circuit');
 
 const router = express.Router();
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'clawagent-admin-2026';
+const crypto = require('crypto');
+// SECURITY: ADMIN_TOKEN must be provided via environment variable.
+// Falls back to a random per-process token (not reusable) with a warning.
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || (() => {
+  const t = crypto.randomBytes(32).toString('hex');
+  console.warn('[SECURITY WARNING] ADMIN_TOKEN env var not set. Admin routes locked for this session.');
+  return t;
+})();
 
 function authAdmin(req, res, next) {
   const token = req.headers['x-admin-token'] || req.query.admin_token;

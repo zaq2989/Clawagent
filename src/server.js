@@ -38,8 +38,8 @@ app.use(corsMiddleware);
 // Security headers
 app.use(helmet());
 
-// Body parsing
-app.use(express.json());
+// Body parsing — explicit 1MB limit to prevent large payload DoS
+app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // x402 payment middleware — gating POST /api/tasks/create with 0.001 USDC (Base Sepolia)
@@ -78,9 +78,19 @@ const taskCreateLimiter = rateLimit({
   message: { ok: false, error: 'Task creation rate limit exceeded. Try again later.' },
 });
 
+// Strict rate limiter for /call (proxy endpoint — expensive + SSRF surface)
+const callLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: 'Too many /call requests. Please slow down.' },
+});
+
 // Apply specific rate limiters
 app.post('/api/agents/register', registerLimiter);
 app.post('/api/tasks/create', taskCreateLimiter);
+app.post('/call', callLimiter);
 
 // Swagger UI (public)
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));

@@ -3,15 +3,33 @@ const crypto = require('crypto');
 const uuidv4 = () => require('crypto').randomUUID();
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../db');
+const { checkSafeUrl } = require('../utils/ssrf');
 
 const router = express.Router();
+
+// SECURITY: ADMIN_TOKEN must be set via environment variable.
+// No insecure default — a random token is generated per-process if unset,
+// making it effectively unusable without knowing the current value.
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || (() => {
+  const t = crypto.randomBytes(32).toString('hex');
+  console.warn('[SECURITY WARNING] ADMIN_TOKEN env var is not set. Reputation endpoint is locked for this session.');
+  return t;
+})();
 
 const registerValidation = [
   body('name').isString().trim().notEmpty().withMessage('Name is required'),
   body('type').optional().isIn(['ai', 'human']).withMessage('type must be ai or human'),
   body('capabilities').optional().isArray().withMessage('capabilities must be an array'),
   body('bond_amount').optional().isFloat({ min: 0 }).withMessage('bond_amount must be a non-negative number'),
-  body('webhook_url').optional().isURL().withMessage('webhook_url must be a valid URL'),
+  body('webhook_url').optional().custom((value) => {
+    if (!value) return true;
+    // Basic URL format check
+    try { new URL(value); } catch { throw new Error('webhook_url must be a valid URL'); }
+    // SSRF protection: block internal/private addresses
+    const { safe, reason } = checkSafeUrl(value);
+    if (!safe) throw new Error(`webhook_url rejected: ${reason}`);
+    return true;
+  }),
   body('pricing').optional().isObject().withMessage('pricing must be an object'),
   body('input_schema').optional().isObject().withMessage('input_schema must be an object'),
   body('output_schema').optional().isObject().withMessage('output_schema must be an object'),
@@ -115,10 +133,9 @@ router.get('/:id', (req, res) => {
 
 // POST /api/agents/:id/reputation — Claw Network reputation update
 router.post('/:id/reputation', (req, res) => {
-  // Simple admin token check
+  // Admin token check — uses module-level ADMIN_TOKEN (env var required)
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'clawnet-admin';
   if (token !== ADMIN_TOKEN) {
     return res.status(401).json({ ok: false, error: 'Unauthorized: valid admin token required' });
   }

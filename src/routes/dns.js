@@ -5,6 +5,7 @@
 const express = require('express');
 const { getDb } = require('../db');
 const { BUILTINS } = require('../builtins');
+const { checkSafeUrl } = require('../utils/ssrf');
 
 const router = express.Router();
 
@@ -196,6 +197,18 @@ router.post('/call', async (req, res) => {
       status:   'no_endpoint',
       message:  'Provider found but has no execution endpoint. Register an endpoint to enable direct execution.',
       resolved: true,
+    });
+  }
+
+  // SSRF guard: validate endpoint before forwarding
+  const ssrfCheck = checkSafeUrl(provider.endpoint);
+  if (!ssrfCheck.safe) {
+    console.error(`[SSRF BLOCKED] agent=${provider.agent_id} endpoint=${provider.endpoint} reason=${ssrfCheck.reason}`);
+    return res.status(502).json({
+      ...baseResponse,
+      output: null,
+      status: 'endpoint_blocked',
+      message: 'Provider endpoint failed security validation and was blocked.',
     });
   }
 

@@ -97,6 +97,18 @@ function initSchema() {
       expires_at INTEGER,
       created_at INTEGER
     );
+
+    CREATE TABLE IF NOT EXISTS peers (
+      id TEXT PRIMARY KEY,
+      url TEXT NOT NULL UNIQUE,
+      name TEXT DEFAULT '',
+      status TEXT DEFAULT 'active',
+      trust_score REAL DEFAULT 50.0,
+      registered_at INTEGER DEFAULT (strftime('%s','now')),
+      last_seen INTEGER DEFAULT NULL,
+      last_error TEXT DEFAULT NULL,
+      public_key TEXT DEFAULT NULL
+    );
   `);
 }
 

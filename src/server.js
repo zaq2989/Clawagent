@@ -28,6 +28,8 @@ const webhooksRouter = require('./routes/webhooks');
 const bountiesRouter = require('./routes/bounties');
 const dnsRouter = require('./routes/dns');
 const jobsRouter = require('./routes/jobs');
+const federationRouter = require('./routes/federation');
+const { checkPeerHealth } = require('./jobs/peerHealthCheck');
 const { swaggerUi, swaggerSpec } = require('./swagger');
 
 const app = express();
@@ -129,6 +131,9 @@ app.get('/api/circuit-breaker/status', (req, res) => {
 // Claw Network Agent DNS — GET /resolve?capability=...
 app.use('/', dnsRouter);
 
+// Claw Network Phase 5 — Federation
+app.use('/federation', federationRouter);
+
 // Async jobs — POST /call/async, GET /jobs/:id
 app.use('/', jobsRouter);
 
@@ -171,6 +176,9 @@ app.post('/api/reputation/update', apiKeyAuth, reputationValidation, (req, res) 
 
 // Initialize DB on startup
 getDb();
+
+// Claw Network Phase 5 — peer health check every 5 minutes
+setInterval(() => checkPeerHealth(getDb()), 5 * 60 * 1000);
 
 // MCPルートをメインのExpressアプリに統合（listen前に登録）
 try {

@@ -180,29 +180,91 @@ function scoreCapability(capability, description, keywords) {
   return Math.min(1.0, score);
 }
 
-// GET /resolve?capability=<name>[@version]
-router.get('/resolve', (req, res) => {
+// GET /resolve?capability=<name>[@version][&federated=true][&visited=url1,url2]
+router.get('/resolve', async (req, res) => {
   const { capability: raw } = req.query;
   if (!raw) {
     return res.status(400).json({ ok: false, error: 'capability query parameter is required' });
   }
 
+  // federated=true means "I am a peer asking you — don't fan-out further" (loop guard)
+  const isFederatedRequest = req.query.federated === 'true';
+  const visited = (req.query.visited || '').split(',').filter(Boolean);
+
   const { canonical, resolvedFrom, version } = resolveCapabilityName(raw);
   const { providers } = getProviders(canonical, null, version);
 
-  const response = { capability: canonical, providers };
-  if (resolvedFrom) response.resolved_from = resolvedFrom;
-  if (version) response.version = version;
+  // Build base response object
+  const baseResponse = { capability: canonical, providers };
+  if (resolvedFrom) baseResponse.resolved_from = resolvedFrom;
+  if (version)      baseResponse.version = version;
 
-  res.json(response);
+  // Local hit → return immediately (no fan-out needed)
+  if (providers.length > 0) {
+    return res.json(baseResponse);
+  }
+
+  // No local result AND this is NOT a peer request — fan-out to peers
+  if (!isFederatedRequest) {
+    const db = getDb();
+    const peers = db.prepare(`SELECT url FROM peers WHERE status = 'active'`).all();
+    const thisNode   = process.env.NODE_URL || 'https://clawagent-production.up.railway.app';
+    const newVisited = [...visited, thisNode].join(',');
+
+    const peerResults = await Promise.allSettled(
+      peers
+        .filter(p => !visited.includes(p.url))
+        .map(async (peer) => {
+          const peerUrl = `${peer.url}/resolve?capability=${encodeURIComponent(raw)}&federated=true&visited=${encodeURIComponent(newVisited)}`;
+          const controller = new AbortController();
+          const tid = setTimeout(() => controller.abort(), 3000);
+          try {
+            const r = await fetch(peerUrl, { signal: controller.signal });
+            clearTimeout(tid);
+            if (!r.ok) return null;
+            const data = await r.json();
+            // Tag each provider with the peer node it came from
+            return {
+              ...data,
+              providers: (data.providers || []).map(p => ({ ...p, source_node: peer.url })),
+            };
+          } catch {
+            clearTimeout(tid);
+            // Mark peer inactive on failure
+            db.prepare(`UPDATE peers SET last_error = ?, status = 'inactive' WHERE url = ?`)
+              .run(new Date().toISOString(), peer.url);
+            return null;
+          }
+        })
+    );
+
+    const allProviders = peerResults
+      .filter(r => r.status === 'fulfilled' && r.value?.providers?.length)
+      .flatMap(r => r.value.providers);
+
+    if (allProviders.length > 0) {
+      return res.json({
+        ...baseResponse,
+        providers:   allProviders,
+        federated:   true,
+        peer_count:  peers.length,
+      });
+    }
+  }
+
+  // Nothing found anywhere
+  return res.json({ ...baseResponse, federated: !isFederatedRequest, peer_count: 0 });
 });
 
-// GET /search?q=<natural language query>
-router.get('/search', (req, res) => {
+// GET /search?q=<natural language query>[&federated=true][&visited=url1,url2]
+router.get('/search', async (req, res) => {
   const { q } = req.query;
   if (!q || !q.trim()) {
     return res.status(400).json({ ok: false, error: 'q query parameter is required' });
   }
+
+  const isFederatedRequest = req.query.federated === 'true';
+  const visited = (req.query.visited || '').split(',').filter(Boolean);
 
   const keywords = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const db = getDb();
@@ -265,7 +327,59 @@ router.get('/search', (req, res) => {
     return obj;
   });
 
-  res.json({ query: q, results: clean });
+  // Fan-out to peers if not a federated request
+  let peerResultsMerged = [];
+  if (!isFederatedRequest) {
+    const peers = db.prepare(`SELECT url FROM peers WHERE status = 'active'`).all();
+    const thisNode   = process.env.NODE_URL || 'https://clawagent-production.up.railway.app';
+    const newVisited = [...visited, thisNode].join(',');
+
+    const settled = await Promise.allSettled(
+      peers
+        .filter(p => !visited.includes(p.url))
+        .map(async (peer) => {
+          const peerUrl = `${peer.url}/search?q=${encodeURIComponent(q)}&federated=true&visited=${encodeURIComponent(newVisited)}`;
+          const controller = new AbortController();
+          const tid = setTimeout(() => controller.abort(), 3000);
+          try {
+            const r = await fetch(peerUrl, { signal: controller.signal });
+            clearTimeout(tid);
+            if (!r.ok) return null;
+            const data = await r.json();
+            return (data.results || []).map(item => ({
+              ...item,
+              providers: (item.providers || []).map(p => ({ ...p, source_node: peer.url })),
+            }));
+          } catch {
+            clearTimeout(tid);
+            return null;
+          }
+        })
+    );
+
+    peerResultsMerged = settled
+      .filter(r => r.status === 'fulfilled' && Array.isArray(r.value))
+      .flatMap(r => r.value);
+  }
+
+  // Merge peer results: combine scores for duplicate capabilities
+  const merged = [...clean];
+  for (const peerItem of peerResultsMerged) {
+    const existing = merged.find(r => r.capability === peerItem.capability);
+    if (existing) {
+      existing.providers = [...existing.providers, ...(peerItem.providers || [])];
+      existing.score     = Math.max(existing.score, peerItem.score);
+    } else {
+      merged.push(peerItem);
+    }
+  }
+  merged.sort((a, b) => b.score - a.score);
+
+  res.json({
+    query:      q,
+    results:    merged,
+    federated:  !isFederatedRequest && peerResultsMerged.length > 0,
+  });
 });
 
 /**

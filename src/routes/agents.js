@@ -4,17 +4,9 @@ const uuidv4 = () => require('crypto').randomUUID();
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('../db');
 const { checkSafeUrl } = require('../utils/ssrf');
+const { ADMIN_TOKEN } = require('../config/auth');
 
 const router = express.Router();
-
-// SECURITY: ADMIN_TOKEN must be set via environment variable.
-// No insecure default — a random token is generated per-process if unset,
-// making it effectively unusable without knowing the current value.
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || (() => {
-  const t = crypto.randomBytes(32).toString('hex');
-  console.warn('[SECURITY WARNING] ADMIN_TOKEN env var is not set. Reputation endpoint is locked for this session.');
-  return t;
-})();
 
 const registerValidation = [
   body('name').isString().trim().notEmpty().withMessage('Name is required'),

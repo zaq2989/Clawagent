@@ -6,6 +6,7 @@ const express = require('express');
 const { getDb } = require('../db');
 const { BUILTINS } = require('../builtins');
 const { checkSafeUrl } = require('../utils/ssrf');
+const { ADMIN_TOKEN } = require('../config/auth');
 
 const router = express.Router();
 
@@ -285,12 +286,11 @@ router.post('/call', async (req, res) => {
  */
 async function _updateReputation(agentId, success, latency_ms) {
   const port = process.env.PORT || 3750;
-  const adminToken = process.env.ADMIN_TOKEN || 'clawnet-admin';
   await fetch(`http://localhost:${port}/api/agents/${agentId}/reputation`, {
     method:  'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${adminToken}`,
+      'Authorization': `Bearer ${ADMIN_TOKEN}`,
     },
     body: JSON.stringify({ success, latency_ms }),
   });

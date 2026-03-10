@@ -1,20 +1,18 @@
 const express = require('express');
 const { getDb } = require('../db');
 const { circuitBreaker } = require('../circuit');
+const { ADMIN_TOKEN } = require('../config/auth');
 
 const router = express.Router();
-const crypto = require('crypto');
-// SECURITY: ADMIN_TOKEN must be provided via environment variable.
-// Falls back to a random per-process token (not reusable) with a warning.
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || (() => {
-  const t = crypto.randomBytes(32).toString('hex');
-  console.warn('[SECURITY WARNING] ADMIN_TOKEN env var not set. Admin routes locked for this session.');
-  return t;
-})();
 
 function authAdmin(req, res, next) {
-  const token = req.headers['x-admin-token'] || req.query.admin_token;
-  if (token !== ADMIN_TOKEN) return res.status(403).json({ ok: false, error: 'Unauthorized' });
+  // Accept token via Authorization header (Bearer) or X-Admin-Token header only.
+  // Query-param auth is intentionally NOT supported to prevent token leakage
+  // into server access logs, CDN/proxy logs, and browser history.
+  const authHeader = req.headers['authorization'] || '';
+  const xAdminHeader = req.headers['x-admin-token'] || '';
+  const token = (authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null) || xAdminHeader || null;
+  if (!token || token !== ADMIN_TOKEN) return res.status(403).json({ ok: false, error: 'Unauthorized' });
   next();
 }
 

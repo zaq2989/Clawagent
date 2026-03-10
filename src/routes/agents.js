@@ -47,8 +47,8 @@ const registerValidation = [
   body('description').optional().isString().trim().withMessage('description must be a string'),
 ];
 
-// POST /api/agents/register
-router.post('/register', registerValidation, async (req, res) => {
+// Handler shared by POST /api/agents and POST /api/agents/register
+async function handleRegister(req, res) {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
 
@@ -114,7 +114,13 @@ router.post('/register', registerValidation, async (req, res) => {
 
   // Return plaintext key only once; it cannot be retrieved again
   res.json({ ok: true, agent: { id, name, api_key: apiKey, verified: verified === 1, owner_address, status: 'active', created_at: now } });
-});
+}
+
+// POST /api/agents — convenience alias (Claw Network SDK compatibility)
+router.post('/', registerValidation, handleRegister);
+
+// POST /api/agents/register
+router.post('/register', registerValidation, handleRegister);
 
 // GET /api/agents — public, no auth required; never exposes api_key or other private fields
 // Optional query param: ?capability=<name> to filter by capability

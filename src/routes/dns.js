@@ -447,7 +447,9 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
   async function fetchWithTimeout(endpoint, capabilityName, inputData, ms) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), ms);
-    const reqBody = JSON.stringify({ capability: capabilityName, input: inputData || {} });
+    // Send raw input directly to provider — providers define their own API format.
+    // Callers should pass the full provider-expected body in the `input` field.
+    const reqBody = JSON.stringify(inputData || {});
 
     try {
       let providerRes = await fetch(endpoint, {

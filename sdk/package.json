@@ -4,6 +4,9 @@
   "description": "SDK for Claw Network — AI Capability Internet",
   "main": "index.js",
   "type": "commonjs",
+  "bin": {
+    "claw": "./cli.js"
+  },
   "keywords": ["ai", "agents", "capability", "mcp", "x402"],
   "author": "zaq2989",
   "license": "MIT",

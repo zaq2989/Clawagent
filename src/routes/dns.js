@@ -4,6 +4,7 @@
 
 const express = require('express');
 const { getDb } = require('../db');
+const { BUILTINS } = require('../builtins');
 
 const router = express.Router();
 
@@ -21,6 +22,12 @@ const SHORT_NAMES = {
   'code.review':      'review.code.general',
   'code.security':    'review.code.security',
   'plan':             'plan.project.roadmap',
+  // Built-in short names
+  'echo':             'echo.text',
+  'detect.lang':      'detect.language',
+  'sentiment':        'analyze.sentiment',
+  'validate':         'validate.json',
+  'format.md':        'format.markdown',
 };
 
 /**
@@ -121,6 +128,29 @@ router.post('/call', async (req, res) => {
   const providers = getProviders(canonical, budget != null ? budget : null);
 
   if (providers.length === 0) {
+    // Still try built-in even if no registered provider
+    const builtinFn = BUILTINS[canonical];
+    if (builtinFn) {
+      try {
+        const output = await builtinFn(input || {});
+        return res.json({
+          capability: canonical,
+          ...(resolvedFrom && { resolved_from: resolvedFrom }),
+          provider: { agent_id: 'builtin', name: 'ClawBuiltin', price_per_call: 0 },
+          output,
+          status: 'builtin',
+        });
+      } catch (err) {
+        return res.status(500).json({
+          ok: false,
+          capability: canonical,
+          ...(resolvedFrom && { resolved_from: resolvedFrom }),
+          output: null,
+          status: 'builtin_error',
+          message: err.message,
+        });
+      }
+    }
     return res.status(404).json({
       ok: false,
       capability: canonical,
@@ -140,8 +170,26 @@ router.post('/call', async (req, res) => {
     },
   };
 
-  // No endpoint — return resolved info without execution
+  // No endpoint — try built-in executor first, then return no_endpoint
   if (!provider.endpoint) {
+    const builtinFn = BUILTINS[canonical];
+    if (builtinFn) {
+      try {
+        const output = await builtinFn(input || {});
+        return res.json({
+          ...baseResponse,
+          output,
+          status: 'builtin',
+        });
+      } catch (err) {
+        return res.status(500).json({
+          ...baseResponse,
+          output:  null,
+          status:  'builtin_error',
+          message: err.message,
+        });
+      }
+    }
     return res.json({
       ...baseResponse,
       output:   null,

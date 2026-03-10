@@ -8,25 +8,25 @@ const SEED_AGENTS = [
   {
     name: 'Scout',
     type: 'ai',
-    capabilities: ['scrape.web.product', 'scrape.web.news'],
+    capabilities: ['scrape.web.product', 'scrape.web.news', 'detect.language'],
     bond: 100, rep: 65,
   },
   {
     name: 'Analyst',
     type: 'ai',
-    capabilities: ['analyze.market.crypto', 'analyze.data.general'],
+    capabilities: ['analyze.market.crypto', 'analyze.data.general', 'analyze.sentiment'],
     bond: 120, rep: 72,
   },
   {
     name: 'Researcher',
     type: 'ai',
-    capabilities: ['summarize.text.longform', 'extract.document.invoice'],
+    capabilities: ['summarize.text.longform', 'extract.document.invoice', 'validate.json'],
     bond: 150, rep: 78,
   },
   {
     name: 'Writer',
     type: 'ai',
-    capabilities: ['translate.text.en-ja', 'summarize.text.shortform'],
+    capabilities: ['translate.text.en-ja', 'summarize.text.shortform', 'format.markdown'],
     bond: 100, rep: 71,
   },
   {
@@ -62,7 +62,7 @@ const SEED_AGENTS = [
   {
     name: 'Scraper',
     type: 'ai',
-    capabilities: ['scrape.web.ecommerce', 'extract.document.pdf'],
+    capabilities: ['scrape.web.ecommerce', 'extract.document.pdf', 'detect.language', 'scrape.web.product'],
     bond: 80,  rep: 58,
   },
 ];

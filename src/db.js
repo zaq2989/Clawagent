@@ -144,6 +144,17 @@ function migrate() {
   if (!colNames.includes('description')) {
     db.exec("ALTER TABLE agents ADD COLUMN description TEXT DEFAULT ''");
   }
+
+  // Claw Network Phase 4 — Verifiable Agent Identity + Capability Versioning
+  if (!colNames.includes('owner_address')) {
+    db.exec('ALTER TABLE agents ADD COLUMN owner_address TEXT DEFAULT NULL');
+  }
+  if (!colNames.includes('verified')) {
+    db.exec('ALTER TABLE agents ADD COLUMN verified INTEGER DEFAULT 0');
+  }
+  if (!colNames.includes('capability_version')) {
+    db.exec("ALTER TABLE agents ADD COLUMN capability_version TEXT DEFAULT 'v1'");
+  }
 }
 
 function seedIfEmpty() {

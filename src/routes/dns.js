@@ -34,39 +34,55 @@ const SHORT_NAMES = {
 };
 
 /**
+ * Parse a raw capability string, splitting off an optional @version suffix.
+ * e.g. "translate.text.en-ja@v2" → { name: "translate.text.en-ja", version: "v2" }
+ *      "translate.text.en-ja"    → { name: "translate.text.en-ja", version: null }
+ */
+function parseCapability(raw) {
+  const atIdx = raw.lastIndexOf('@');
+  if (atIdx !== -1 && atIdx < raw.length - 1) {
+    return { name: raw.slice(0, atIdx), version: raw.slice(atIdx + 1) };
+  }
+  return { name: raw, version: null };
+}
+
+/**
  * Resolve a capability name, expanding short names to canonical form.
- * Returns { canonical, resolvedFrom } — resolvedFrom is set only if expansion happened.
+ * Returns { canonical, resolvedFrom, version } — resolvedFrom is set only if expansion happened.
  */
 function resolveCapabilityName(raw) {
-  if (SHORT_NAMES[raw]) {
-    return { canonical: SHORT_NAMES[raw], resolvedFrom: raw };
+  const { name, version } = parseCapability(raw);
+  if (SHORT_NAMES[name]) {
+    return { canonical: SHORT_NAMES[name], resolvedFrom: name, version };
   }
-  return { canonical: raw, resolvedFrom: null };
+  return { canonical: name, resolvedFrom: null, version };
 }
 
 /**
  * Score an agent provider for ranking.
- * score = reputation_score * 0.4 + success_rate * 100 * 0.4
+ * score = reputation_score * 0.35 + success_rate * 100 * 0.35
  *         - price_per_call * 1000 * 0.1 - latency_ms / 100 * 0.1
+ *         + verified ? 10 : 0
  */
 function calcScore(agent, pricing) {
-  const rep   = agent.reputation_score || 50;
-  const sr    = agent.success_rate     || 1.0;
-  const price = pricing.price_per_call || 0;
-  const lat   = agent.latency_ms       || 1000;
-  return rep * 0.4 + sr * 100 * 0.4 - price * 1000 * 0.1 - lat / 100 * 0.1;
+  const rep      = agent.reputation_score || 50;
+  const sr       = agent.success_rate     || 1.0;
+  const price    = pricing.price_per_call || 0;
+  const lat      = agent.latency_ms       || 1000;
+  const verified = agent.verified         === 1 ? 10 : 0;
+  return rep * 0.35 + sr * 100 * 0.35 - price * 1000 * 0.1 - lat / 100 * 0.1 + verified;
 }
 
 /**
  * Fetch and rank providers for a canonical capability name.
- * Optionally filter by budget (max price_per_call in ETH).
+ * Optionally filter by budget (max price_per_call in ETH) and version string.
  * Returns { providers, cheapest } where cheapest is the cheapest overall (ignoring budget).
  */
-function getProviders(capability, budget) {
+function getProviders(capability, budget, version = null) {
   const db = getDb();
 
   const agents = db.prepare(
-    "SELECT id, name, status, capabilities, pricing, reputation_score, success_rate, latency_ms, webhook_url FROM agents WHERE status = 'active'"
+    "SELECT id, name, status, capabilities, pricing, reputation_score, success_rate, latency_ms, webhook_url, owner_address, verified, capability_version FROM agents WHERE status = 'active'"
   ).all();
 
   const allMatching = [];
@@ -76,6 +92,10 @@ function getProviders(capability, budget) {
     try { caps = JSON.parse(agent.capabilities || '[]'); } catch (_) {}
     if (!Array.isArray(caps) || !caps.includes(capability)) continue;
 
+    // Capability version filtering
+    const agentVersion = agent.capability_version || 'v1';
+    if (version && agentVersion !== version) continue;
+
     let pricing = {};
     try { pricing = JSON.parse(agent.pricing || '{}'); } catch (_) {}
 
@@ -83,16 +103,19 @@ function getProviders(capability, budget) {
     const score = calcScore(agent, pricing);
 
     allMatching.push({
-      agent_id:         agent.id,
-      name:             agent.name,
-      endpoint:         agent.webhook_url || null,
-      price_per_call:   pricePerCall,
-      currency:         pricing.currency || 'ETH',
-      latency_ms:       agent.latency_ms        || 1000,
-      reputation_score: agent.reputation_score  || 50,
-      success_rate:     agent.success_rate      || 1.0,
-      status:           agent.status,
-      _score:           score,
+      agent_id:           agent.id,
+      name:               agent.name,
+      endpoint:           agent.webhook_url || null,
+      price_per_call:     pricePerCall,
+      currency:           pricing.currency || 'ETH',
+      latency_ms:         agent.latency_ms       || 1000,
+      reputation_score:   agent.reputation_score || 50,
+      success_rate:       agent.success_rate     || 1.0,
+      status:             agent.status,
+      verified:           agent.verified === 1,
+      owner_address:      agent.owner_address || null,
+      capability_version: agentVersion,
+      _score:             score,
     });
   }
 
@@ -157,18 +180,19 @@ function scoreCapability(capability, description, keywords) {
   return Math.min(1.0, score);
 }
 
-// GET /resolve?capability=<name>
+// GET /resolve?capability=<name>[@version]
 router.get('/resolve', (req, res) => {
   const { capability: raw } = req.query;
   if (!raw) {
     return res.status(400).json({ ok: false, error: 'capability query parameter is required' });
   }
 
-  const { canonical, resolvedFrom } = resolveCapabilityName(raw);
-  const { providers } = getProviders(canonical, null);
+  const { canonical, resolvedFrom, version } = resolveCapabilityName(raw);
+  const { providers } = getProviders(canonical, null, version);
 
   const response = { capability: canonical, providers };
   if (resolvedFrom) response.resolved_from = resolvedFrom;
+  if (version) response.version = version;
 
   res.json(response);
 });
@@ -246,18 +270,19 @@ router.get('/search', (req, res) => {
 
 /**
  * Core call logic — shared between POST /call and POST /call/async
- * @param {object} opts  { capability (raw), input, budget, timeout_ms }
+ * @param {object} opts  { capability (raw), input, budget, timeout_ms, payerConfig }
  * @returns {Promise<{ status, output, provider, capability, resolved_from? }>}
  */
-async function resolveAndCall({ capability: raw, input, budget, timeout_ms }) {
+async function resolveAndCall({ capability: raw, input, budget, timeout_ms, payerConfig = null }) {
   if (!raw) throw Object.assign(new Error('capability is required'), { statusCode: 400 });
 
-  const { canonical, resolvedFrom } = resolveCapabilityName(raw);
-  const { providers, cheapest } = getProviders(canonical, budget != null ? budget : null);
+  const { canonical, resolvedFrom, version } = resolveCapabilityName(raw);
+  const { providers, cheapest } = getProviders(canonical, budget != null ? budget : null, version);
 
   const baseInfo = {
     capability: canonical,
     ...(resolvedFrom && { resolved_from: resolvedFrom }),
+    ...(version && { version }),
   };
 
   // Budget exceeded — no providers within budget
@@ -295,17 +320,44 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms }) {
 
   const timeoutMs = (typeof timeout_ms === 'number' && timeout_ms > 0) ? timeout_ms : 5000;
 
-  // Helper: fetch a provider endpoint with timeout
+  // Helper: fetch a provider endpoint with timeout, handling x402 payment if needed
   async function fetchWithTimeout(endpoint, capabilityName, inputData, ms) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
+    const reqBody = JSON.stringify({ capability: capabilityName, input: inputData || {} });
     try {
-      const providerRes = await fetch(endpoint, {
+      let providerRes = await fetch(endpoint, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ capability: capabilityName, input: inputData || {} }),
+        body:    reqBody,
         signal:  controller.signal,
       });
+
+      // x402 payment handling
+      if (providerRes.status === 402 && payerConfig?.privateKey) {
+        try {
+          const { INTMAX402Client } = require('@tanakayuto/intmax402-client');
+          const client = new INTMAX402Client({
+            eth_private_key: payerConfig.privateKey,
+            environment: payerConfig.environment || 'mainnet',
+          });
+          const wwwAuth = providerRes.headers.get('www-authenticate') || '';
+          const authHeader = await client.createPaymentHeader(wwwAuth);
+          providerRes = await fetch(endpoint, {
+            method:  'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': authHeader,
+            },
+            body: reqBody,
+            signal: controller.signal,
+          });
+        } catch (payErr) {
+          console.warn(`[x402] Payment failed for ${endpoint}: ${payErr.message}`);
+          // continue with the 402 response (caller will handle)
+        }
+      }
+
       clearTimeout(timer);
       return providerRes;
     } catch (err) {
@@ -383,14 +435,26 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms }) {
 
 // POST /call
 router.post('/call', async (req, res) => {
-  const { capability: raw, input, budget, timeout_ms } = req.body;
+  const { capability: raw, input, budget, timeout_ms, payer } = req.body;
 
   if (!raw) {
     return res.status(400).json({ ok: false, error: 'capability is required' });
   }
 
+  // Resolve payer private key from environment variable (never accept raw keys)
+  let payerConfig = null;
+  if (payer?.private_key_env) {
+    const pk = process.env[payer.private_key_env];
+    if (pk) {
+      payerConfig = {
+        privateKey:  pk,
+        environment: payer.environment || 'mainnet',
+      };
+    }
+  }
+
   try {
-    const result = await resolveAndCall({ capability: raw, input, budget, timeout_ms });
+    const result = await resolveAndCall({ capability: raw, input, budget, timeout_ms, payerConfig });
     return res.json(result);
   } catch (err) {
     if (err.body) {

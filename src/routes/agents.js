@@ -8,6 +8,25 @@ const { ADMIN_TOKEN } = require('../config/auth');
 
 const router = express.Router();
 
+// In-memory nonce store for challenge/response identity verification (5-min TTL)
+const challengeStore = new Map();
+// Cleanup expired nonces every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [nonce, data] of challengeStore) {
+    if (now - data.createdAt > 5 * 60 * 1000) {
+      challengeStore.delete(nonce);
+    }
+  }
+}, 5 * 60 * 1000);
+
+// GET /api/agents/challenge — returns a nonce for wallet-signed agent registration
+router.get('/challenge', (req, res) => {
+  const nonce = crypto.randomBytes(32).toString('hex');
+  challengeStore.set(nonce, { createdAt: Date.now() });
+  res.json({ nonce, message: `Register Claw Network agent: ${nonce}` });
+});
+
 const registerValidation = [
   body('name').isString().trim().notEmpty().withMessage('Name is required'),
   body('type').optional().isIn(['ai', 'human']).withMessage('type must be ai or human'),
@@ -29,21 +48,57 @@ const registerValidation = [
 ];
 
 // POST /api/agents/register
-router.post('/register', registerValidation, (req, res) => {
+router.post('/register', registerValidation, async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
 
   const db = getDb();
-  const { name, type, capabilities, bond_amount, webhook_url, pricing, input_schema, output_schema, description } = req.body;
+  const { name, type, capabilities, bond_amount, webhook_url, pricing, input_schema, output_schema, description, signature, nonce, capability_version } = req.body;
+
+  // --- Verifiable Agent Identity: signature verification ---
+  let owner_address = null;
+  let verified = 0;
+
+  if (signature && nonce) {
+    // Validate nonce exists and is not expired (5 min)
+    const challengeData = challengeStore.get(nonce);
+    if (!challengeData || Date.now() - challengeData.createdAt > 5 * 60 * 1000) {
+      return res.status(400).json({ ok: false, error: 'Invalid or expired nonce. Call GET /api/agents/challenge first.' });
+    }
+    try {
+      const { ethers } = require('ethers');
+      const message = `Register Claw Network agent: ${nonce}`;
+      const recoveredAddress = ethers.verifyMessage(message, signature);
+      owner_address = recoveredAddress;
+      verified = 1;
+      challengeStore.delete(nonce); // consume nonce (replay prevention)
+    } catch (e) {
+      // Bad signature — proceed as unverified (don't block registration)
+      owner_address = null;
+      verified = 0;
+    }
+  }
+
+  // --- Parse capabilities, stripping @version for storage but recording capability_version ---
+  const rawCapabilities = capabilities || [];
+  const parsedCapabilities = rawCapabilities.map(c => c.split('@')[0]);
+  // capability_version: use explicit field, or derive from first versioned capability
+  let capVersion = capability_version || 'v1';
+  if (!capability_version) {
+    for (const c of rawCapabilities) {
+      const parts = c.split('@');
+      if (parts.length > 1 && parts[1]) { capVersion = parts[1]; break; }
+    }
+  }
 
   const id = uuidv4();
   const apiKey = uuidv4();
   const hashedKey = crypto.createHash('sha256').update(apiKey).digest('hex');
   const now = Date.now();
-  db.prepare(`INSERT INTO agents (id, name, type, capabilities, api_key, bond_amount, webhook_url, pricing, input_schema, output_schema, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  db.prepare(`INSERT INTO agents (id, name, type, capabilities, api_key, bond_amount, webhook_url, pricing, input_schema, output_schema, description, owner_address, verified, capability_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       id, name, type || 'ai',
-      JSON.stringify(capabilities || []),
+      JSON.stringify(parsedCapabilities),
       hashedKey,
       bond_amount || 0,
       webhook_url || null,
@@ -51,11 +106,14 @@ router.post('/register', registerValidation, (req, res) => {
       JSON.stringify(input_schema || {}),
       JSON.stringify(output_schema || {}),
       description || '',
+      owner_address,
+      verified,
+      capVersion,
       now
     );
 
   // Return plaintext key only once; it cannot be retrieved again
-  res.json({ ok: true, agent: { id, name, api_key: apiKey, status: 'active', created_at: now } });
+  res.json({ ok: true, agent: { id, name, api_key: apiKey, verified: verified === 1, owner_address, status: 'active', created_at: now } });
 });
 
 // GET /api/agents — public, no auth required; never exposes api_key or other private fields
@@ -64,7 +122,7 @@ router.get('/', (req, res) => {
   const db = getDb();
   const { capability } = req.query;
   const rows = db.prepare(
-    'SELECT id, name, type, capabilities, pricing, input_schema, output_schema, description, reputation_score, success_rate, latency_ms, call_count, bond_amount, tasks_completed, tasks_failed, status, created_at FROM agents ORDER BY reputation_score DESC'
+    'SELECT id, name, type, capabilities, pricing, input_schema, output_schema, description, reputation_score, success_rate, latency_ms, call_count, bond_amount, tasks_completed, tasks_failed, status, owner_address, verified, capability_version, created_at FROM agents ORDER BY reputation_score DESC'
   ).all();
   const agents = rows
     .filter(a => {
@@ -90,6 +148,9 @@ router.get('/', (req, res) => {
     tasks_completed: a.tasks_completed,
     tasks_failed:    a.tasks_failed,
     status:          a.status,
+    verified:        a.verified === 1,
+    owner_address:   a.owner_address || null,
+    capability_version: a.capability_version || 'v1',
     created_at:      a.created_at,
   }));
   res.json({ ok: true, agents, ...(capability && { filtered_by: capability }) });

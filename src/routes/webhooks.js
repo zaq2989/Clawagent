@@ -10,6 +10,7 @@ const { body, validationResult } = require('express-validator');
 const { getDb } = require('../db');
 const { sendWebhook } = require('../webhook');
 const { apiKeyAuth } = require('../middleware/auth');
+const { checkSafeUrl } = require('../utils/ssrf');
 
 const router = express.Router();
 
@@ -28,6 +29,12 @@ router.post('/test', apiKeyAuth, [
   const targetUrl = req.body.webhook_url || agent.webhook_url;
   if (!targetUrl) {
     return res.status(400).json({ ok: false, error: 'No webhook_url configured. Provide one in the request body or register your agent with a webhook_url.' });
+  }
+
+  // SSRF guard: validate the target URL before sending
+  const ssrfCheck = checkSafeUrl(targetUrl);
+  if (!ssrfCheck.safe) {
+    return res.status(400).json({ ok: false, error: `webhook_url rejected: ${ssrfCheck.reason}` });
   }
 
   const payload = {

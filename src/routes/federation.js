@@ -9,6 +9,7 @@ const router = express.Router();
 const crypto = require('crypto');
 const { getDb } = require('../db');
 const { ADMIN_TOKEN } = require('../config/auth');
+const { checkSafeUrl } = require('../utils/ssrf');
 
 const THIS_NODE_URL  = process.env.NODE_URL  || 'https://clawagent-production.up.railway.app';
 const THIS_NODE_NAME = process.env.NODE_NAME || 'Claw Network Main';
@@ -25,24 +26,21 @@ function requireAdmin(req, res, next) {
 }
 
 // ─── URL validation (SSRF guard) ───────────────────────────────────────────────
+// Delegates to the canonical checkSafeUrl utility which covers the full RFC 1918
+// range (including 172.16.0.0–172.31.255.255), link-local, and cloud metadata
+// endpoints. The previous inline implementation only blocked 172.16.x.x and
+// missed 172.17.x.x–172.31.x.x.
 function validatePeerUrl(url) {
-  let parsed;
+  const check = checkSafeUrl(url);
+  if (!check.safe) {
+    return { ok: false, error: check.reason || 'Private URLs not allowed' };
+  }
   try {
-    parsed = new URL(url);
+    const parsed = new URL(url);
+    return { ok: true, parsed };
   } catch (_) {
     return { ok: false, error: 'Invalid URL' };
   }
-
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    return { ok: false, error: 'Invalid URL protocol' };
-  }
-
-  const blocked = ['localhost', '127.', '10.', '192.168.', '172.16.', '169.254.', '::1', '[::1]'];
-  if (blocked.some(b => parsed.hostname === 'localhost' || parsed.hostname.startsWith(b))) {
-    return { ok: false, error: 'Private URLs not allowed' };
-  }
-
-  return { ok: true, parsed };
 }
 
 // ─── POST /federation/peers ─────────────────────────────────────────────────────

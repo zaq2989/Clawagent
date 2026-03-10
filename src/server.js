@@ -117,6 +117,8 @@ const federationPeerLimiter = rateLimit({
 app.post('/api/agents/register', registerLimiter);
 app.post('/api/tasks/create', taskCreateLimiter);
 app.post('/call', callLimiter);
+// /call/async shares the same rate limit budget as /call to prevent bypass
+app.post('/call/async', callLimiter);
 app.post('/federation/peers', federationPeerLimiter);
 
 // Swagger UI (public)

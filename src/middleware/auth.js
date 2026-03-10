@@ -6,6 +6,13 @@ function hashKey(key) {
 }
 
 function apiKeyAuth(req, res, next) {
+  // x402 payment counts as authentication — skip API key check
+  if (req.headers['x-payment']) {
+    req.agentId = 'x402-payer';
+    req.apiKey = null;
+    return next();
+  }
+
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ ok: false, error: 'Authorization header required (Bearer <api_key>)' });

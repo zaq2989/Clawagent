@@ -11,7 +11,7 @@ process.on('unhandledRejection', (reason) => {
 const express = require('express');
 const path = require('path');
 const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
 const { getDb } = require('./db');
 const { updateReputation } = require('./routes/reputation');
@@ -32,6 +32,9 @@ const { swaggerUi, swaggerSpec } = require('./swagger');
 const app = express();
 const PORT = process.env.PORT || 3750;
 
+// Trust Railway's load balancer to get real client IP from X-Forwarded-For
+app.set('trust proxy', 1);
+
 // CORS
 app.use(corsMiddleware);
 
@@ -51,13 +54,17 @@ try {
   console.warn('[x402] Payment middleware disabled:', e.message);
 }
 
-// Global rate limit: 100 req / 15 min per IP
+// Global rate limit: 200 req / 15 min per IP (real IP via X-Forwarded-For)
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 200,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { ok: false, error: 'Too many requests. Please try again later.' },
+  keyGenerator: (req) => req.headers['x-forwarded-for']?.split(',')[0]?.trim() || ipKeyGenerator(req),
+  handler: (req, res) => res.status(429).json({
+    error: 'Too many requests',
+    retryAfter: Math.ceil(req.rateLimit.resetTime / 1000),
+  }),
 }));
 
 // Rate limiters for specific endpoints
@@ -84,7 +91,13 @@ const callLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { ok: false, error: 'Too many /call requests. Please slow down.' },
+  keyGenerator: (req) => req.headers['x-forwarded-for']?.split(',')[0]?.trim() || ipKeyGenerator(req),
+  handler: (req, res) => res.status(429).json({
+    error: 'Rate limit exceeded for /call endpoint',
+    retryAfter: Math.ceil(req.rateLimit.resetTime / 1000),
+    limit: 30,
+    windowMs: 60000,
+  }),
 });
 
 // Apply specific rate limiters

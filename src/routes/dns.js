@@ -460,11 +460,27 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
       // ── x402 payment handling ──────────────────────────────────────────────
       if (providerRes.status === 402) {
         const wwwAuth = providerRes.headers.get('www-authenticate') || '';
+        // Parse x402 JSON body for payment details (e.g. ClawAgent returns payment info in body, not header)
+        let paymentAccepts = null;
+        try {
+          const bodyText = await providerRes.text();
+          const bodyJson = JSON.parse(bodyText);
+          if (bodyJson.accepts && Array.isArray(bodyJson.accepts)) {
+            paymentAccepts = bodyJson.accepts;
+          }
+        } catch (_) { /* non-JSON 402 body — ignore */ }
         clearTimeout(timeoutId);
+
+        // Detect scheme: prefer WWW-Authenticate header, fallback to body scheme, then default x402
+        const detectedSchemeFromHeader = detectScheme(wwwAuth);
+        const bodyScheme = paymentAccepts?.[0]?.scheme === 'exact' ? 'x402' : null;
+        const effectiveScheme = detectedSchemeFromHeader !== 'unknown'
+          ? detectedSchemeFromHeader
+          : (bodyScheme || 'x402');
 
         if (payment_proof) {
           // Determine payment header name based on scheme
-          const scheme = payment_scheme || detectScheme(wwwAuth);
+          const scheme = payment_scheme || effectiveScheme;
           let paymentHeaders = {};
           if (scheme === 'xmr402' || scheme === 'intmax402') {
             paymentHeaders['Authorization'] = payment_proof;
@@ -489,14 +505,14 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
         }
 
         // No payment_proof — signal caller to return payment_required to SDK
-        const detectedScheme = detectScheme(wwwAuth);
         const err = Object.assign(
           new Error('payment_required'),
           {
             statusCode: 402,
             paymentRequired: true,
             wwwAuthenticate: wwwAuth,
-            paymentScheme: detectedScheme,
+            paymentScheme: effectiveScheme,
+            paymentAccepts,  // x402 JSON body accepts array
           }
         );
         throw err;
@@ -559,7 +575,8 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
           provider: providerInfo,
           status: 'payment_required',
           payment_scheme: err.paymentScheme || 'x402',
-          www_authenticate: err.wwwAuthenticate,
+          www_authenticate: err.wwwAuthenticate || undefined,
+          ...(err.paymentAccepts ? { payment_accepts: err.paymentAccepts } : {}),
           supported_payment_methods: ['x402', 'xmr402', 'intmax402'],
           retry_hint: 'Sign payment and retry with payment_proof and payment_scheme fields',
         };

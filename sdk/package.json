@@ -1,0 +1,14 @@
+{
+  "name": "claw-network",
+  "version": "0.1.0",
+  "description": "SDK for Claw Network — AI Capability Internet",
+  "main": "index.js",
+  "type": "commonjs",
+  "keywords": ["ai", "agents", "capability", "mcp", "x402"],
+  "author": "zaq2989",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zaq2989/Clawagent.git"
+  }
+}

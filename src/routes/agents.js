@@ -47,12 +47,21 @@ router.post('/register', registerValidation, (req, res) => {
 });
 
 // GET /api/agents — public, no auth required; never exposes api_key or other private fields
+// Optional query param: ?capability=<name> to filter by capability
 router.get('/', (req, res) => {
   const db = getDb();
+  const { capability } = req.query;
   const rows = db.prepare(
     'SELECT id, name, type, capabilities, pricing, input_schema, output_schema, reputation_score, success_rate, latency_ms, call_count, bond_amount, tasks_completed, tasks_failed, status, created_at FROM agents ORDER BY reputation_score DESC'
   ).all();
-  const agents = rows.map(a => ({
+  const agents = rows
+    .filter(a => {
+      if (!capability) return true;
+      let caps = [];
+      try { caps = JSON.parse(a.capabilities || '[]'); } catch (_) {}
+      return Array.isArray(caps) && caps.includes(capability);
+    })
+    .map(a => ({
     id: a.id,
     name: a.name,
     type: a.type,
@@ -70,7 +79,7 @@ router.get('/', (req, res) => {
     status:          a.status,
     created_at:      a.created_at,
   }));
-  res.json({ ok: true, agents });
+  res.json({ ok: true, agents, ...(capability && { filtered_by: capability }) });
 });
 
 // GET /api/agents/:id

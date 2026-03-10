@@ -27,6 +27,7 @@ const adminRouter = require('./routes/admin');
 const webhooksRouter = require('./routes/webhooks');
 const bountiesRouter = require('./routes/bounties');
 const dnsRouter = require('./routes/dns');
+const jobsRouter = require('./routes/jobs');
 const { swaggerUi, swaggerSpec } = require('./swagger');
 
 const app = express();
@@ -127,6 +128,9 @@ app.get('/api/circuit-breaker/status', (req, res) => {
 
 // Claw Network Agent DNS — GET /resolve?capability=...
 app.use('/', dnsRouter);
+
+// Async jobs — POST /call/async, GET /jobs/:id
+app.use('/', jobsRouter);
 
 // API routes (auth handled inside each router)
 app.use('/api/agents', agentsRouter);

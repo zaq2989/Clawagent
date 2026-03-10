@@ -139,6 +139,11 @@ function migrate() {
   if (!colNames.includes('call_count')) {
     db.exec('ALTER TABLE agents ADD COLUMN call_count INTEGER DEFAULT 0');
   }
+
+  // Claw Network Phase 3 — description for semantic search
+  if (!colNames.includes('description')) {
+    db.exec("ALTER TABLE agents ADD COLUMN description TEXT DEFAULT ''");
+  }
 }
 
 function seedIfEmpty() {

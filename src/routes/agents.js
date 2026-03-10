@@ -25,6 +25,7 @@ const registerValidation = [
   body('pricing').optional().isObject().withMessage('pricing must be an object'),
   body('input_schema').optional().isObject().withMessage('input_schema must be an object'),
   body('output_schema').optional().isObject().withMessage('output_schema must be an object'),
+  body('description').optional().isString().trim().withMessage('description must be a string'),
 ];
 
 // POST /api/agents/register
@@ -33,13 +34,13 @@ router.post('/register', registerValidation, (req, res) => {
   if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
 
   const db = getDb();
-  const { name, type, capabilities, bond_amount, webhook_url, pricing, input_schema, output_schema } = req.body;
+  const { name, type, capabilities, bond_amount, webhook_url, pricing, input_schema, output_schema, description } = req.body;
 
   const id = uuidv4();
   const apiKey = uuidv4();
   const hashedKey = crypto.createHash('sha256').update(apiKey).digest('hex');
   const now = Date.now();
-  db.prepare(`INSERT INTO agents (id, name, type, capabilities, api_key, bond_amount, webhook_url, pricing, input_schema, output_schema, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  db.prepare(`INSERT INTO agents (id, name, type, capabilities, api_key, bond_amount, webhook_url, pricing, input_schema, output_schema, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       id, name, type || 'ai',
       JSON.stringify(capabilities || []),
@@ -49,6 +50,7 @@ router.post('/register', registerValidation, (req, res) => {
       JSON.stringify(pricing || {}),
       JSON.stringify(input_schema || {}),
       JSON.stringify(output_schema || {}),
+      description || '',
       now
     );
 
@@ -62,7 +64,7 @@ router.get('/', (req, res) => {
   const db = getDb();
   const { capability } = req.query;
   const rows = db.prepare(
-    'SELECT id, name, type, capabilities, pricing, input_schema, output_schema, reputation_score, success_rate, latency_ms, call_count, bond_amount, tasks_completed, tasks_failed, status, created_at FROM agents ORDER BY reputation_score DESC'
+    'SELECT id, name, type, capabilities, pricing, input_schema, output_schema, description, reputation_score, success_rate, latency_ms, call_count, bond_amount, tasks_completed, tasks_failed, status, created_at FROM agents ORDER BY reputation_score DESC'
   ).all();
   const agents = rows
     .filter(a => {
@@ -79,6 +81,7 @@ router.get('/', (req, res) => {
     pricing:         JSON.parse(a.pricing        || '{}'),
     input_schema:    JSON.parse(a.input_schema   || '{}'),
     output_schema:   JSON.parse(a.output_schema  || '{}'),
+    description:     a.description || '',
     reputation_score: a.reputation_score,
     success_rate:    a.success_rate,
     latency_ms:      a.latency_ms,

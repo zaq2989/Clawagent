@@ -1,5 +1,6 @@
 // src/routes/dns.js — Claw Network Agent DNS
 // GET /resolve?capability=translate.text.en-ja
+// GET /search?q=translate+japanese
 // POST /call
 
 const express = require('express');
@@ -59,6 +60,7 @@ function calcScore(agent, pricing) {
 /**
  * Fetch and rank providers for a canonical capability name.
  * Optionally filter by budget (max price_per_call in ETH).
+ * Returns { providers, cheapest } where cheapest is the cheapest overall (ignoring budget).
  */
 function getProviders(capability, budget) {
   const db = getDb();
@@ -67,7 +69,7 @@ function getProviders(capability, budget) {
     "SELECT id, name, status, capabilities, pricing, reputation_score, success_rate, latency_ms, webhook_url FROM agents WHERE status = 'active'"
   ).all();
 
-  const providers = [];
+  const allMatching = [];
 
   for (const agent of agents) {
     let caps = [];
@@ -78,13 +80,9 @@ function getProviders(capability, budget) {
     try { pricing = JSON.parse(agent.pricing || '{}'); } catch (_) {}
 
     const pricePerCall = pricing.price_per_call || 0;
-
-    // Skip if over budget
-    if (budget != null && pricePerCall > budget) continue;
-
     const score = calcScore(agent, pricing);
 
-    providers.push({
+    allMatching.push({
       agent_id:         agent.id,
       name:             agent.name,
       endpoint:         agent.webhook_url || null,
@@ -98,8 +96,65 @@ function getProviders(capability, budget) {
     });
   }
 
-  providers.sort((a, b) => b._score - a._score);
-  return providers.map(({ _score, ...p }) => p);
+  allMatching.sort((a, b) => b._score - a._score);
+
+  // Find overall cheapest (for budget_exceeded response)
+  let cheapest = null;
+  if (allMatching.length > 0) {
+    cheapest = allMatching.reduce((min, p) => p.price_per_call < min.price_per_call ? p : min, allMatching[0]);
+  }
+
+  // Filter by budget
+  const providers = budget != null
+    ? allMatching.filter(p => p.price_per_call <= budget)
+    : allMatching;
+
+  return {
+    providers: providers.map(({ _score, ...p }) => p),
+    cheapest:  cheapest ? { provider: cheapest.name, price_per_call: cheapest.price_per_call } : null,
+  };
+}
+
+/**
+ * Score a capability name against a set of query keywords.
+ * Scores domain/category/action parts + description field.
+ */
+function scoreCapability(capability, description, keywords) {
+  const capLower = capability.toLowerCase();
+  const descLower = (description || '').toLowerCase();
+  const parts = capLower.split('.');  // [domain, category, action, ...]
+
+  let score = 0;
+  let matched = 0;
+
+  for (const kw of keywords) {
+    const kwLower = kw.toLowerCase();
+    let kwScore = 0;
+
+    // Exact part match (higher weight)
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i] === kwLower) {
+        kwScore += (i === 0 ? 0.3 : i === 1 ? 0.4 : 0.3);
+      } else if (parts[i].includes(kwLower)) {
+        kwScore += (i === 0 ? 0.15 : i === 1 ? 0.2 : 0.15);
+      }
+    }
+
+    // Description match
+    if (descLower.includes(kwLower)) {
+      kwScore += 0.2;
+    }
+
+    if (kwScore > 0) matched++;
+    score += kwScore;
+  }
+
+  // Normalize: scale by fraction of keywords matched
+  if (keywords.length > 0 && matched > 0) {
+    score = score * (matched / keywords.length);
+  }
+
+  return Math.min(1.0, score);
 }
 
 // GET /resolve?capability=<name>
@@ -110,7 +165,7 @@ router.get('/resolve', (req, res) => {
   }
 
   const { canonical, resolvedFrom } = resolveCapabilityName(raw);
-  const providers = getProviders(canonical, null);
+  const { providers } = getProviders(canonical, null);
 
   const response = { capability: canonical, providers };
   if (resolvedFrom) response.resolved_from = resolvedFrom;
@@ -118,47 +173,124 @@ router.get('/resolve', (req, res) => {
   res.json(response);
 });
 
-// POST /call
-router.post('/call', async (req, res) => {
-  const { capability: raw, input, budget, timeout_ms } = req.body;
-
-  if (!raw) {
-    return res.status(400).json({ ok: false, error: 'capability is required' });
+// GET /search?q=<natural language query>
+router.get('/search', (req, res) => {
+  const { q } = req.query;
+  if (!q || !q.trim()) {
+    return res.status(400).json({ ok: false, error: 'q query parameter is required' });
   }
 
+  const keywords = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const db = getDb();
+
+  // Gather all unique capabilities from active agents
+  const agents = db.prepare(
+    "SELECT capabilities, pricing, reputation_score, success_rate, latency_ms, webhook_url, description, name, id FROM agents WHERE status = 'active'"
+  ).all();
+
+  const capMap = new Map(); // capability → { providers: [], description: '' }
+
+  for (const agent of agents) {
+    let caps = [];
+    try { caps = JSON.parse(agent.capabilities || '[]'); } catch (_) {}
+    if (!Array.isArray(caps)) continue;
+
+    let pricing = {};
+    try { pricing = JSON.parse(agent.pricing || '{}'); } catch (_) {}
+
+    for (const cap of caps) {
+      if (!capMap.has(cap)) {
+        capMap.set(cap, { providers: [], description: agent.description || '' });
+      }
+      const entry = capMap.get(cap);
+      entry.providers.push({
+        agent_id:         agent.id,
+        name:             agent.name,
+        price_per_call:   pricing.price_per_call || 0,
+        currency:         pricing.currency || 'ETH',
+        reputation_score: agent.reputation_score || 50,
+        success_rate:     agent.success_rate || 1.0,
+        latency_ms:       agent.latency_ms || 1000,
+      });
+    }
+  }
+
+  // Also include built-in capabilities
+  for (const builtinCap of Object.keys(BUILTINS)) {
+    if (!capMap.has(builtinCap)) {
+      capMap.set(builtinCap, { providers: [], description: 'Built-in capability' });
+    }
+  }
+
+  // Score each capability
+  const results = [];
+  for (const [cap, { providers, description }] of capMap) {
+    const score = scoreCapability(cap, description, keywords);
+    if (score > 0) {
+      results.push({ capability: cap, score: Math.round(score * 100) / 100, providers, description: description || undefined });
+    }
+  }
+
+  // Sort by score descending
+  results.sort((a, b) => b.score - a.score);
+
+  // Remove description if empty
+  const clean = results.map(r => {
+    const obj = { capability: r.capability, score: r.score, providers: r.providers };
+    if (r.description) obj.description = r.description;
+    return obj;
+  });
+
+  res.json({ query: q, results: clean });
+});
+
+/**
+ * Core call logic — shared between POST /call and POST /call/async
+ * @param {object} opts  { capability (raw), input, budget, timeout_ms }
+ * @returns {Promise<{ status, output, provider, capability, resolved_from? }>}
+ */
+async function resolveAndCall({ capability: raw, input, budget, timeout_ms }) {
+  if (!raw) throw Object.assign(new Error('capability is required'), { statusCode: 400 });
+
   const { canonical, resolvedFrom } = resolveCapabilityName(raw);
-  const providers = getProviders(canonical, budget != null ? budget : null);
+  const { providers, cheapest } = getProviders(canonical, budget != null ? budget : null);
+
+  const baseInfo = {
+    capability: canonical,
+    ...(resolvedFrom && { resolved_from: resolvedFrom }),
+  };
+
+  // Budget exceeded — no providers within budget
+  if (providers.length === 0 && budget != null && cheapest) {
+    const err = Object.assign(
+      new Error(`No providers within budget of ${budget} ETH`),
+      {
+        statusCode: 402,
+        body: {
+          status: 'budget_exceeded',
+          message: `No providers within budget of ${budget} ETH`,
+          cheapest_available: cheapest,
+          ...baseInfo,
+        },
+      }
+    );
+    throw err;
+  }
 
   if (providers.length === 0) {
-    // Still try built-in even if no registered provider
+    // Try built-in before 404
     const builtinFn = BUILTINS[canonical];
     if (builtinFn) {
-      try {
-        const output = await builtinFn(input || {});
-        return res.json({
-          capability: canonical,
-          ...(resolvedFrom && { resolved_from: resolvedFrom }),
-          provider: { agent_id: 'builtin', name: 'ClawBuiltin', price_per_call: 0 },
-          output,
-          status: 'builtin',
-        });
-      } catch (err) {
-        return res.status(500).json({
-          ok: false,
-          capability: canonical,
-          ...(resolvedFrom && { resolved_from: resolvedFrom }),
-          output: null,
-          status: 'builtin_error',
-          message: err.message,
-        });
-      }
+      const output = await builtinFn(input || {});
+      return {
+        ...baseInfo,
+        provider: { agent_id: 'builtin', name: 'ClawBuiltin', price_per_call: 0 },
+        output,
+        status: 'builtin',
+      };
     }
-    return res.status(404).json({
-      ok: false,
-      capability: canonical,
-      ...(resolvedFrom && { resolved_from: resolvedFrom }),
-      error: 'No providers found for this capability',
-    });
+    const err = Object.assign(new Error('No providers found for this capability'), { statusCode: 404 });
+    throw err;
   }
 
   const timeoutMs = (typeof timeout_ms === 'number' && timeout_ms > 0) ? timeout_ms : 5000;
@@ -182,39 +314,26 @@ router.post('/call', async (req, res) => {
     }
   }
 
-  // Try each ranked provider in order, falling back on error/timeout
   let lastError = null;
   for (const provider of providers) {
-    const baseResponse = {
-      capability: canonical,
-      ...(resolvedFrom && { resolved_from: resolvedFrom }),
-      provider: {
-        agent_id:       provider.agent_id,
-        name:           provider.name,
-        price_per_call: provider.price_per_call,
-      },
+    const providerInfo = {
+      agent_id:       provider.agent_id,
+      name:           provider.name,
+      price_per_call: provider.price_per_call,
     };
 
-    // No endpoint — try built-in, then skip to next provider
     if (!provider.endpoint) {
       const builtinFn = BUILTINS[canonical];
       if (builtinFn) {
-        try {
-          const output = await builtinFn(input || {});
-          return res.json({ ...baseResponse, output, status: 'builtin' });
-        } catch (err) {
-          return res.status(500).json({ ...baseResponse, output: null, status: 'builtin_error', message: err.message });
-        }
+        const output = await builtinFn(input || {});
+        return { ...baseInfo, provider: providerInfo, output, status: 'builtin' };
       }
-      // No builtin either — continue to next provider
       continue;
     }
 
-    // SSRF guard
     const ssrfCheck = checkSafeUrl(provider.endpoint);
     if (!ssrfCheck.safe) {
       console.error(`[SSRF BLOCKED] agent=${provider.agent_id} endpoint=${provider.endpoint} reason=${ssrfCheck.reason}`);
-      // Skip this provider
       continue;
     }
 
@@ -223,23 +342,20 @@ router.post('/call', async (req, res) => {
       const providerRes = await fetchWithTimeout(provider.endpoint, canonical, input, timeoutMs);
       const latency = Date.now() - startMs;
       const output = await providerRes.json();
-      const success = providerRes.ok;
 
-      // Fire-and-forget reputation update (success)
-      _updateReputation(provider.agent_id, success, latency).catch(() => {});
+      _updateReputation(provider.agent_id, providerRes.ok, latency).catch(() => {});
 
-      return res.json({
-        ...baseResponse,
+      return {
+        ...baseInfo,
+        provider: providerInfo,
         output,
         latency_ms: latency,
-        status: success ? 'success' : 'provider_error',
-      });
+        status: providerRes.ok ? 'success' : 'provider_error',
+      };
     } catch (err) {
       const latency = Date.now() - startMs;
-      // Fire-and-forget reputation update (failure)
       _updateReputation(provider.agent_id, false, latency).catch(() => {});
       lastError = err;
-      // Continue to next provider
       console.warn(`[FALLBACK] provider=${provider.agent_id} failed (${err.name === 'AbortError' ? 'timeout' : err.message}), trying next...`);
       continue;
     }
@@ -248,37 +364,43 @@ router.post('/call', async (req, res) => {
   // All providers failed — fall back to built-in
   const builtinFn = BUILTINS[canonical];
   if (builtinFn) {
-    try {
-      const output = await builtinFn(input || {});
-      return res.json({
-        capability: canonical,
-        ...(resolvedFrom && { resolved_from: resolvedFrom }),
-        provider: { agent_id: 'builtin', name: 'ClawBuiltin', price_per_call: 0 },
-        output,
-        status: 'builtin_fallback',
-        message: 'All registered providers failed; served by built-in.',
-      });
-    } catch (err) {
-      return res.status(500).json({
-        ok: false,
-        capability: canonical,
-        ...(resolvedFrom && { resolved_from: resolvedFrom }),
-        output: null,
-        status: 'builtin_error',
-        message: err.message,
-      });
-    }
+    const output = await builtinFn(input || {});
+    return {
+      ...baseInfo,
+      provider: { agent_id: 'builtin', name: 'ClawBuiltin', price_per_call: 0 },
+      output,
+      status: 'builtin_fallback',
+      message: 'All registered providers failed; served by built-in.',
+    };
   }
 
-  // Nothing worked
-  return res.status(502).json({
-    ok: false,
-    capability: canonical,
-    ...(resolvedFrom && { resolved_from: resolvedFrom }),
-    output: null,
-    status: lastError?.name === 'AbortError' ? 'timeout' : 'error',
-    message: lastError ? (lastError.name === 'AbortError' ? `All providers timed out after ${timeoutMs}ms` : lastError.message) : 'All providers failed',
-  });
+  const err = Object.assign(
+    new Error(lastError?.name === 'AbortError' ? `All providers timed out after ${timeoutMs}ms` : (lastError?.message || 'All providers failed')),
+    { statusCode: 502 }
+  );
+  throw err;
+}
+
+// POST /call
+router.post('/call', async (req, res) => {
+  const { capability: raw, input, budget, timeout_ms } = req.body;
+
+  if (!raw) {
+    return res.status(400).json({ ok: false, error: 'capability is required' });
+  }
+
+  try {
+    const result = await resolveAndCall({ capability: raw, input, budget, timeout_ms });
+    return res.json(result);
+  } catch (err) {
+    if (err.body) {
+      return res.status(err.statusCode || 400).json(err.body);
+    }
+    return res.status(err.statusCode || 500).json({
+      ok: false,
+      error: err.message,
+    });
+  }
 });
 
 /**
@@ -297,3 +419,4 @@ async function _updateReputation(agentId, success, latency_ms) {
 }
 
 module.exports = router;
+module.exports.resolveAndCall = resolveAndCall;

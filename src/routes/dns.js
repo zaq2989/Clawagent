@@ -434,11 +434,13 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paye
 
   const timeoutMs = (typeof timeout_ms === 'number' && timeout_ms > 0) ? timeout_ms : 5000;
 
-  // Helper: fetch a provider endpoint with timeout, handling x402 payment if needed
+  // Helper: fetch a provider endpoint with timeout, handling x402 payment if needed.
+  // Returns { response, paymentInfo } where paymentInfo is non-null when a payment was made.
   async function fetchWithTimeout(endpoint, capabilityName, inputData, ms) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
     const reqBody = JSON.stringify({ capability: capabilityName, input: inputData || {} });
+
     try {
       let providerRes = await fetch(endpoint, {
         method:  'POST',
@@ -447,33 +449,63 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paye
         signal:  controller.signal,
       });
 
-      // x402 payment handling
-      if (providerRes.status === 402 && payerConfig?.privateKey) {
+      // ── x402 payment handling ──────────────────────────────────────────────
+      if (providerRes.status === 402) {
+        if (!payerConfig?.privateKey) {
+          // No payer configured — surface a helpful error
+          clearTimeout(timer);
+          const err = Object.assign(
+            new Error('Provider requires payment. Include payer in request.'),
+            {
+              statusCode: 402,
+              body: {
+                status:  'payment_required',
+                message: 'Provider requires payment. Include payer in request.',
+                hint:    'Add "payer": {"key_env": "YOUR_PRIVATE_KEY_ENV_VAR"} to request body',
+              },
+            }
+          );
+          throw err;
+        }
+
+        const wwwAuth = providerRes.headers.get('www-authenticate') || '';
         try {
-          const { INTMAX402Client } = require('@tanakayuto/intmax402-client');
-          const client = new INTMAX402Client({
-            eth_private_key: payerConfig.privateKey,
-            environment: payerConfig.environment || 'mainnet',
-          });
-          const wwwAuth = providerRes.headers.get('www-authenticate') || '';
-          const authHeader = await client.createPaymentHeader(wwwAuth);
+          const { createX402PaymentHeader } = require('../payment/x402Client');
+          const { 'X-PAYMENT': xPayment, paymentInfo } =
+            await createX402PaymentHeader(wwwAuth, payerConfig.privateKey);
+
           providerRes = await fetch(endpoint, {
             method:  'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': authHeader,
+              'X-PAYMENT': xPayment,
             },
-            body: reqBody,
+            body:   reqBody,
             signal: controller.signal,
           });
+
+          clearTimeout(timer);
+          return { response: providerRes, paymentInfo };
         } catch (payErr) {
-          console.warn(`[x402] Payment failed for ${endpoint}: ${payErr.message}`);
-          // continue with the 402 response (caller will handle)
+          clearTimeout(timer);
+          if (payErr.body) throw payErr; // already structured
+          const err = Object.assign(
+            new Error(`x402 payment failed: ${payErr.message}`),
+            {
+              statusCode: 402,
+              body: {
+                status:  'payment_failed',
+                message: `x402 payment failed: ${payErr.message}`,
+              },
+            }
+          );
+          throw err;
         }
       }
+      // ──────────────────────────────────────────────────────────────────────
 
       clearTimeout(timer);
-      return providerRes;
+      return { response: providerRes, paymentInfo: null };
     } catch (err) {
       clearTimeout(timer);
       throw err;
@@ -505,7 +537,8 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paye
 
     const startMs = Date.now();
     try {
-      const providerRes = await fetchWithTimeout(provider.endpoint, canonical, input, timeoutMs);
+      const { response: providerRes, paymentInfo } =
+        await fetchWithTimeout(provider.endpoint, canonical, input, timeoutMs);
       const latency = Date.now() - startMs;
       const output = await providerRes.json();
 
@@ -517,8 +550,12 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paye
         output,
         latency_ms: latency,
         status: providerRes.ok ? 'success' : 'provider_error',
+        ...(paymentInfo ? { payment: { paid: true, ...paymentInfo } } : {}),
       };
     } catch (err) {
+      // Structured errors (402 payment_required / payment_failed) bubble up immediately
+      if (err.body) throw err;
+
       const latency = Date.now() - startMs;
       _updateReputation(provider.agent_id, false, latency).catch(() => {});
       lastError = err;
@@ -555,15 +592,24 @@ router.post('/call', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'capability is required' });
   }
 
-  // Resolve payer private key from environment variable (never accept raw keys)
+  // Resolve payer private key from environment variable (never accept raw keys).
+  // Supports both payer.key_env (new) and payer.private_key_env (legacy).
   let payerConfig = null;
-  if (payer?.private_key_env) {
-    const pk = process.env[payer.private_key_env];
+  const keyEnvName = payer?.key_env || payer?.private_key_env;
+  if (keyEnvName) {
+    const pk = process.env[keyEnvName];
     if (pk) {
       payerConfig = {
         privateKey:  pk,
         environment: payer.environment || 'mainnet',
       };
+    } else {
+      // Key env var specified but not found — return early with clear error
+      return res.status(402).json({
+        status:  'payment_required',
+        message: `Payer key not found in environment: ${keyEnvName}`,
+        hint:    `Set the ${keyEnvName} environment variable to a 0x-prefixed private key`,
+      });
     }
   }
 

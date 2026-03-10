@@ -23,11 +23,24 @@ class ClawNetwork:
         r.raise_for_status()
         return r.json()
 
-    def call(self, capability: str, input: dict = {}, budget: Optional[float] = None, timeout_ms: int = 5000) -> dict:
-        """Call a capability and return the result."""
+    def call(self, capability: str, input: dict = {}, budget: Optional[float] = None,
+             timeout_ms: int = 5000, payer: Optional[dict] = None) -> dict:
+        """Call a capability and return the result.
+
+        Args:
+            capability: The capability name (e.g. "task.run.general").
+            input:      Payload forwarded to the provider.
+            budget:     Max price_per_call in ETH to filter providers.
+            timeout_ms: Provider call timeout in milliseconds.
+            payer:      Payment config for x402-gated providers.
+                        Example: {"key_env": "MY_AGENT_PRIVATE_KEY"}
+                        The Claw Network node reads the private key from that env var.
+        """
         body = {"capability": capability, "input": input, "timeout_ms": timeout_ms}
         if budget is not None:
             body["budget"] = budget
+        if payer is not None:
+            body["payer"] = payer
         r = self._client.post(f"{self.base_url}/call", json=body, headers=self._headers())
         r.raise_for_status()
         return r.json()
@@ -90,10 +103,14 @@ class AsyncClawNetwork:
             r.raise_for_status()
             return r.json()
 
-    async def call(self, capability: str, input: dict = {}, budget: Optional[float] = None, timeout_ms: int = 5000) -> dict:
+    async def call(self, capability: str, input: dict = {}, budget: Optional[float] = None,
+                   timeout_ms: int = 5000, payer: Optional[dict] = None) -> dict:
+        """Call a capability. Supports x402 payments via payer={"key_env": "MY_KEY"}."""
         body = {"capability": capability, "input": input, "timeout_ms": timeout_ms}
         if budget is not None:
             body["budget"] = budget
+        if payer is not None:
+            body["payer"] = payer
         async with httpx.AsyncClient(timeout=30.0) as c:
             r = await c.post(f"{self.base_url}/call", json=body, headers=self._headers())
             r.raise_for_status()

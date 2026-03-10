@@ -153,6 +153,7 @@ try {
   console.error('MCP router failed to mount:', err.message);
 }
 
-app.listen(PORT, '127.0.0.1', () => {
+const HOST = process.env.RAILWAY_ENVIRONMENT ? '0.0.0.0' : '127.0.0.1';
+app.listen(PORT, HOST, () => {
   console.log(`ClawAgent MVP running on http://localhost:${PORT}`);
 });

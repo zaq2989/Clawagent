@@ -54,15 +54,21 @@ router.post('/peers', (req, res) => {
   if (!validation.ok) return res.status(400).json({ error: validation.error });
 
   const db = getDb();
-  const id = crypto.randomUUID();
   const cleanUrl = url.replace(/\/$/, '');
 
+  // Reject duplicate URL registrations — prevents hijacking existing peer records
+  const existing = db.prepare('SELECT id FROM peers WHERE url = ?').get(cleanUrl);
+  if (existing) {
+    return res.status(409).json({ ok: false, error: 'Peer already registered', url: cleanUrl });
+  }
+
+  const id = crypto.randomUUID();
   try {
-    db.prepare(`INSERT OR REPLACE INTO peers (id, url, name, public_key) VALUES (?, ?, ?, ?)`)
+    db.prepare(`INSERT INTO peers (id, url, name, public_key) VALUES (?, ?, ?, ?)`)
       .run(id, cleanUrl, name || '', public_key || null);
     res.status(201).json({ ok: true, peer_id: id, url: cleanUrl, name: name || '' });
   } catch (e) {
-    res.status(409).json({ error: 'Peer already registered', url: cleanUrl });
+    res.status(409).json({ ok: false, error: 'Peer already registered', url: cleanUrl });
   }
 });
 

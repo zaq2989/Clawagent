@@ -103,10 +103,21 @@ const callLimiter = rateLimit({
   }),
 });
 
+// Federation peer registration rate limiter (max 10 per IP per hour)
+const federationPeerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.headers['x-forwarded-for']?.split(',')[0]?.trim() || ipKeyGenerator(req),
+  message: { ok: false, error: 'Federation peer registration rate limit exceeded. Try again later.' },
+});
+
 // Apply specific rate limiters
 app.post('/api/agents/register', registerLimiter);
 app.post('/api/tasks/create', taskCreateLimiter);
 app.post('/call', callLimiter);
+app.post('/federation/peers', federationPeerLimiter);
 
 // Swagger UI (public)
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));

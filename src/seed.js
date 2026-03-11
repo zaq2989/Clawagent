@@ -106,6 +106,9 @@ function seedAgents(db) {
   if (inserted > 0) console.log(`[seed] ${inserted} agents inserted`);
   if (updated  > 0) console.log(`[seed] ${updated} agents updated with Claw Network capabilities`);
   if (inserted === 0 && updated === 0) console.log('[seed] No changes needed');
+
+  const total = db.prepare('SELECT COUNT(*) as c FROM agents').get().c;
+  console.log(`[seed] Total agents in DB: ${total}`);
 }
 
 module.exports = { seedAgents };

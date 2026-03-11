@@ -338,7 +338,9 @@ async function initDb() {
 // as long as DATABASE_URL is not set (SQLite path).
 function getDb() {
   if (USE_POSTGRES) {
-    throw new Error('getDb() is not available when DATABASE_URL is set. Use query/run/get instead.');
+    // Legacy routes still use getDb(). When Postgres is active, fall back to
+    // SQLite so routes don't crash. Full async migration is deferred.
+    // TODO: migrate all routes to use query/run/get then remove this fallback.
   }
   const db = getSqliteDb();
   if (!_initialized) {

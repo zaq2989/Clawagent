@@ -1,10 +1,12 @@
+const logger = require('./logger');
+
 // Catch unhandled errors so Railway logs the cause before crash
 process.on('uncaughtException', (err) => {
-  console.error('[FATAL] Uncaught Exception:', err);
+  logger.error('Uncaught Exception', { error: err.message, stack: err.stack });
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
-  console.error('[FATAL] Unhandled Rejection:', reason);
+  logger.error('Unhandled Rejection', { reason: String(reason) });
   process.exit(1);
 });
 
@@ -13,7 +15,7 @@ const path = require('path');
 const helmet = require('helmet');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
-const { getDb } = require('./db');
+const { getDb, get: dbGet, USE_POSTGRES } = require('./db');
 const { updateReputation } = require('./routes/reputation');
 const { circuitBreaker } = require('./circuit');
 const { apiKeyAuth } = require('./middleware/auth');
@@ -52,9 +54,9 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 try {
   const { createX402Middleware } = require('./x402');
   app.use(createX402Middleware());
-  console.log('[x402] Payment middleware enabled (Base Sepolia, 0.001 USDC per task)');
+  logger.info('[x402] Payment middleware enabled (Base Sepolia, 0.001 USDC per task)');
 } catch (e) {
-  console.warn('[x402] Payment middleware disabled:', e.message);
+  logger.warn('[x402] Payment middleware disabled', { reason: e.message });
 }
 
 // Global rate limit: 200 req / 15 min per IP (real IP via X-Forwarded-For)
@@ -124,9 +126,27 @@ app.post('/federation/peers', federationPeerLimiter);
 // Swagger UI (public)
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
-// Health check (public)
-app.get('/api/health', (req, res) => {
-  res.json({ ok: true, service: 'ClawAgent', version: '1.0.0', uptime: process.uptime() });
+// Health check (public) — enhanced
+app.get('/api/health', async (req, res) => {
+  const health = {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    db: 'unknown',
+    agentCount: 0,
+    version: process.env.npm_package_version || '1.0.0',
+  };
+
+  try {
+    const result = await dbGet('SELECT COUNT(*) as count FROM agents WHERE status = ?', ['active']);
+    health.agentCount = Number(result?.count ?? 0);
+    health.db = USE_POSTGRES ? 'postgres' : 'sqlite';
+  } catch (e) {
+    health.status = 'degraded';
+    health.db = 'error';
+  }
+
+  const statusCode = health.status === 'ok' ? 200 : 503;
+  res.status(statusCode).json(health);
 });
 
 // Circuit breaker status (public) — original endpoint
@@ -198,10 +218,10 @@ try {
   const { createMcpRouter } = require('./mcp-server');
   createMcpRouter(app);
 } catch (err) {
-  console.error('MCP router failed to mount:', err.message);
+  logger.error('MCP router failed to mount', { error: err.message });
 }
 
 const HOST = process.env.RAILWAY_ENVIRONMENT ? '0.0.0.0' : '127.0.0.1';
 app.listen(PORT, HOST, () => {
-  console.log(`ClawAgent MVP running on http://localhost:${PORT}`);
+  logger.info('ClawAgent started', { port: PORT, host: HOST, db: USE_POSTGRES ? 'postgres' : 'sqlite' });
 });

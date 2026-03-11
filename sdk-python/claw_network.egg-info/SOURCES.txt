@@ -1,0 +1,8 @@
+README.md
+setup.py
+claw_network/__init__.py
+claw_network.egg-info/PKG-INFO
+claw_network.egg-info/SOURCES.txt
+claw_network.egg-info/dependency_links.txt
+claw_network.egg-info/requires.txt
+claw_network.egg-info/top_level.txt

@@ -143,6 +143,8 @@ app.get('/api/health', async (req, res) => {
   } catch (e) {
     health.status = 'degraded';
     health.db = 'error';
+    health.dbError = e.message;
+    logger.error('Health check DB error', { error: e.message, code: e.code });
   }
 
   const statusCode = health.status === 'ok' ? 200 : 503;

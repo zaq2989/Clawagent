@@ -9,7 +9,10 @@ function hashKey(key) {
 
 const { seedAgents } = require('./seed');
 
-const DB_PATH = path.join(__dirname, '..', 'clawagent.db');
+// Use persistent volume path on Railway, fallback to local for development
+const DB_PATH = process.env.RAILWAY_ENVIRONMENT
+  ? '/app/data/clawagent.db'
+  : path.join(__dirname, '..', 'clawagent.db');
 
 let db;
 

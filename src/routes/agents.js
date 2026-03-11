@@ -41,6 +41,14 @@ const registerValidation = [
     if (!safe) throw new Error(`webhook_url rejected: ${reason}`);
     return true;
   }),
+  body('endpoint').optional().custom((value) => {
+    if (!value) return true;
+    // Accept 'endpoint' as alias for 'webhook_url'
+    try { new URL(value); } catch { throw new Error('endpoint must be a valid URL'); }
+    const { safe, reason } = checkSafeUrl(value);
+    if (!safe) throw new Error(`endpoint rejected: ${reason}`);
+    return true;
+  }),
   body('pricing').optional().isObject().withMessage('pricing must be an object'),
   body('input_schema').optional().isObject().withMessage('input_schema must be an object'),
   body('output_schema').optional().isObject().withMessage('output_schema must be an object'),
@@ -53,7 +61,9 @@ async function handleRegister(req, res) {
   if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
 
   const db = getDb();
-  const { name, type, capabilities, bond_amount, webhook_url, pricing, input_schema, output_schema, description, signature, nonce, capability_version } = req.body;
+  const { name, type, capabilities, bond_amount, pricing, input_schema, output_schema, description, signature, nonce, capability_version } = req.body;
+  // Accept 'endpoint' as alias for 'webhook_url'
+  const webhook_url = req.body.webhook_url || req.body.endpoint || null;
 
   // --- Verifiable Agent Identity: signature verification ---
   let owner_address = null;

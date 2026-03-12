@@ -65,13 +65,20 @@ const SEED_AGENTS = [
     capabilities: ['scrape.web.ecommerce', 'extract.document.pdf', 'detect.language', 'scrape.web.product'],
     bond: 80,  rep: 58,
   },
+  {
+    name: 'Claw Web Search',
+    type: 'builtin',
+    capabilities: ['web.search'],
+    webhook_url: 'internal://web.search',
+    bond: 0,   rep: 100,
+  },
 ];
 
 function seedAgents(db) {
   const existsStmt  = db.prepare('SELECT id FROM agents WHERE name = ? LIMIT 1');
   const insertStmt  = db.prepare(`
     INSERT INTO agents (id, name, type, capabilities, pricing, input_schema, output_schema, bond_amount, reputation_score, success_rate, latency_ms, call_count, status, created_at, webhook_url)
-    VALUES (?, ?, ?, ?, ?, '{}', '{}', ?, ?, 1.0, 1000, 0, 'active', ?, '')
+    VALUES (?, ?, ?, ?, ?, '{}', '{}', ?, ?, 1.0, 1000, 0, 'active', ?, ?)
   `);
   const updateStmt  = db.prepare(`
     UPDATE agents SET capabilities = ?, pricing = ? WHERE name = ?
@@ -93,7 +100,8 @@ function seedAgents(db) {
         pricingJson,
         agent.bond,
         agent.rep,
-        Date.now()
+        Date.now(),
+        agent.webhook_url || ''
       );
       inserted++;
     } else {

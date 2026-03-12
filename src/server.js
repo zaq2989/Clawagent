@@ -23,6 +23,7 @@ const { corsMiddleware } = require('./middleware/cors');
 
 const tasksRouter = require('./routes/tasks');
 const agentsRouter = require('./routes/agents');
+const statsRouter = require('./routes/stats');
 const escrowRouter = require('./routes/escrow');
 const verifyRouter = require('./routes/verify');
 const adminRouter = require('./routes/admin');
@@ -175,6 +176,7 @@ app.use('/', jobsRouter);
 // API routes (auth handled inside each router)
 app.use('/api/agents', agentsRouter);
 app.use('/api/tasks', tasksRouter);
+app.use('/api/stats', statsRouter);
 app.use('/api/escrow', escrowRouter);
 app.use('/api/verify', verifyRouter);
 app.use('/api/admin', adminRouter);

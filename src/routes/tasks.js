@@ -127,6 +127,121 @@ router.patch('/:id/status', apiKeyAuth, statusValidation, (req, res) => {
   res.json({ ok: true, task_id: req.params.id, status });
 });
 
+// ── Load Balancing: pick best agent for a capability ─────────────────────────
+/**
+ * Score an agent: higher is better.
+ * Fields reputation_score, success_rate, latency_ms are added by migration.
+ */
+function scoreAgent(agent) {
+  const rep     = typeof agent.reputation_score === 'number' ? agent.reputation_score : 50;
+  const success = typeof agent.success_rate     === 'number' ? agent.success_rate     : 1.0;
+  const latency = typeof agent.latency_ms       === 'number' ? agent.latency_ms       : 1000;
+  return (rep * success) / (latency + 1);
+}
+
+/**
+ * Given a list of agents that all have the required capability, return the one
+ * with the highest score. Falls back to random selection when scores are equal.
+ */
+function pickBestAgent(agents) {
+  if (!agents || agents.length === 0) return null;
+  if (agents.length === 1) return agents[0];
+
+  let best = agents[0];
+  let bestScore = scoreAgent(agents[0]);
+  for (let i = 1; i < agents.length; i++) {
+    const s = scoreAgent(agents[i]);
+    if (s > bestScore) {
+      bestScore = s;
+      best = agents[i];
+    }
+  }
+  return best;
+}
+
+// POST /api/tasks/run — capability-based task execution with load balancing
+// capability=web.search → handled internally (no webhook)
+// other capabilities → routed to best matching agent
+router.post('/run', apiKeyAuth, async (req, res) => {
+  try {
+    const db = getDb();
+    const { capability, input } = req.body;
+
+    if (!capability) {
+      return res.status(400).json({ ok: false, error: '`capability` is required' });
+    }
+
+    const taskId  = uuidv4();
+    const now     = Date.now();
+
+    // ── Built-in: web.search ────────────────────────────────────────────────
+    if (capability === 'web.search') {
+      const { webSearch } = require('../capabilities/webSearch');
+      const queryStr = (typeof input === 'string') ? input : (input?.query || input?.text || '');
+      if (!queryStr) {
+        return res.status(400).json({ ok: false, error: '`input.query` or `input.text` is required for web.search' });
+      }
+      const limitVal = input?.limit || 5;
+
+      let results;
+      try {
+        results = await webSearch(queryStr, { limit: limitVal });
+      } catch (searchErr) {
+        return res.status(502).json({ ok: false, error: 'Web search failed', detail: searchErr.message });
+      }
+
+      // Save task as completed
+      db.prepare(`
+        INSERT INTO tasks (id, category, intent, input_data, status, result, created_at, completed_at)
+        VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)
+      `).run(taskId, 'web.search', queryStr, JSON.stringify(input || {}), JSON.stringify(results), now, now);
+
+      return res.json({ taskId, status: 'completed', result: results });
+    }
+
+    // ── External capability: find best matching agent ────────────────────────
+    const allActive = db.prepare("SELECT * FROM agents WHERE status = 'active'").all();
+
+    const matching = allActive.filter(agent => {
+      const caps = JSON.parse(agent.capabilities || '[]');
+      return caps.includes(capability);
+    });
+
+    if (matching.length === 0) {
+      return res.status(404).json({ ok: false, error: `No active agent found for capability: ${capability}` });
+    }
+
+    const best = pickBestAgent(matching);
+
+    // Save task as assigned
+    db.prepare(`
+      INSERT INTO tasks (id, category, intent, input_data, worker_id, status, created_at, assigned_at)
+      VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?)
+    `).run(taskId, capability, capability, JSON.stringify(input || {}), best.id, now, now);
+
+    // Notify agent webhook (fire-and-forget)
+    if (best.webhook_url && !best.webhook_url.startsWith('internal://')) {
+      notifyWebhook(best.webhook_url, 'task_assigned', {
+        task_id:    taskId,
+        capability,
+        input,
+        worker_id:  best.id,
+      });
+    }
+
+    return res.json({
+      taskId,
+      status:  'assigned',
+      agentId: best.id,
+      agentName: best.name,
+      score: Math.round(scoreAgent(best) * 10000) / 10000,
+    });
+  } catch (err) {
+    console.error('[tasks/run] Error:', err);
+    return res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
+});
+
 // GET /api/tasks/:id/match (auth required)
 router.get('/:id/match', apiKeyAuth, (req, res) => {
   const db = getDb();

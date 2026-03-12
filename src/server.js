@@ -47,7 +47,20 @@ app.set('trust proxy', 1);
 app.use(corsMiddleware);
 
 // Security headers
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],  // inline scripts in marketplace.html
+      styleSrc: ["'self'", "https:", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:"],
+      connectSrc: ["'self'"],
+      fontSrc: ["'self'", "https:", "data:"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'self'"],
+    },
+  },
+}));
 
 // Body parsing — explicit 1MB limit to prevent large payload DoS
 app.use(express.json({ limit: '1mb' }));

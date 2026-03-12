@@ -1,4 +1,4 @@
-// claw-network SDK v0.5.0
+// claw-network SDK v0.6.0
 // AI capability routing with built-in payments.
 
 'use strict';
@@ -163,6 +163,66 @@ class ClawNetwork {
       : `${this.baseUrl}/api/agents`;
     const res = await fetch(url);
     return res.json();
+  }
+
+  /**
+   * Search for agents/capabilities by keyword using the web.search capability.
+   *
+   * @param {string} query - Search query
+   * @param {{ limit?: number }} [options]
+   * @returns {Promise<import('./index').CallResult>}
+   */
+  async webSearch(query, options = {}) {
+    return this.call('web.search', { query, limit: options.limit || 5 });
+  }
+
+  /**
+   * Scrape a web page via the web.scrape capability.
+   *
+   * @param {string} url - Target URL to scrape
+   * @returns {Promise<import('./index').CallResult>}
+   */
+  async webScrape(url) {
+    return this.call('web.scrape', { url });
+  }
+
+  /**
+   * Convenience helper: register a worker agent.
+   *
+   * @param {string} name - Worker display name
+   * @param {string[]} capabilities - Capability list
+   * @param {string} webhookUrl - Webhook URL (can be empty for polling workers)
+   * @param {object} [options] - Extra RegisterOptions fields
+   * @returns {Promise<import('./index').RegisterResult>}
+   */
+  async registerWorker(name, capabilities, webhookUrl, options = {}) {
+    return this.register({
+      name,
+      capabilities,
+      webhookUrl,
+      pricing: options.pricing || { type: 'free' },
+      ...options,
+    });
+  }
+
+  /**
+   * Get the status and result of a specific task by ID.
+   *
+   * @param {string} taskId
+   * @returns {Promise<any>}
+   */
+  async getTask(taskId) {
+    const res = await fetch(`${this.baseUrl}/api/tasks/${taskId}`, {
+      headers: this._headers(),
+    });
+    return res.json();
+  }
+
+  /** @private */
+  _headers() {
+    const h = { 'Content-Type': 'application/json' };
+    if (this.apiKey) h['X-API-Key'] = this.apiKey;
+    return h;
   }
 
   /** @private */

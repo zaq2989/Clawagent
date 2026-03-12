@@ -1,6 +1,6 @@
 {
   "name": "claw-network",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Claw Network SDK — AI capability routing with built-in payments",
   "main": "index.js",
   "types": "index.d.ts",

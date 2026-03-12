@@ -1,122 +1,213 @@
 #!/usr/bin/env node
 // ClawAgent Ollama Worker
-// Polls ClawAgent for open bounties, executes them via Ollama, submits results
+// Polls ClawAgent task queue for pending tasks, executes via Ollama, submits results.
+//
+// Usage:
+//   CLAWAGENT_API_KEY=<key> node worker/ollama-worker.js
+//   or use ./worker/start-worker.sh <api_key>
 
-const CLAWAGENT_URL = 'http://localhost:3750';
-const OLLAMA_URL = 'http://localhost:11434';
-const WORKER_NAME = process.env.WORKER_NAME || 'OllamaWorker';
-const WORKER_SKILLS = (process.env.WORKER_SKILLS || 'analysis,research,writing,summarization').split(',');
-const POLL_INTERVAL_MS = 30000; // 30秒ごとにチェック
+'use strict';
+
+const CLAWAGENT_URL = process.env.CLAWAGENT_URL || 'https://clawagent-production.up.railway.app';
+const OLLAMA_URL    = process.env.OLLAMA_URL    || 'http://localhost:11434';
+const OLLAMA_MODEL  = process.env.OLLAMA_MODEL  || 'qwen2.5:7b';
+const WORKER_NAME   = process.env.WORKER_NAME   || 'OllamaWorker-Local';
+const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || '15000', 10);
 
 let workerApiKey = process.env.CLAWAGENT_API_KEY || null;
-let workerId = null;
 
-// 1. 起動時にClawAgentに登録（未登録の場合）
-async function register() {
-  const res = await fetch(`${CLAWAGENT_URL}/api/agents/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name: WORKER_NAME,
-      type: 'ai',
-      capabilities: WORKER_SKILLS,
-      bond_amount: 50,
+// ---------------------------------------------------------------------------
+// SSRF guard: only allow requests to the pre-configured CLAWAGENT_URL and
+// OLLAMA_URL – the worker never opens arbitrary remote URLs from task input.
+// ---------------------------------------------------------------------------
+const ALLOWED_URL_PREFIXES = [
+  CLAWAGENT_URL.replace(/\/$/, ''),
+  OLLAMA_URL.replace(/\/$/, ''),
+];
 
-    })
-  });
-  const data = await res.json();
-  workerApiKey = data.agent?.api_key || data.api_key;
-  workerId = data.agent?.id;
-  console.log(`[${WORKER_NAME}] Registered. id=${workerId}`);
-  return data;
+function assertSafeUrl(url) {
+  const ok = ALLOWED_URL_PREFIXES.some(prefix => url.startsWith(prefix));
+  if (!ok) {
+    throw new Error(`[SSRF guard] Blocked request to disallowed URL: ${url}`);
+  }
 }
 
-// 2. Ollamaでタスクを実行
-async function executeWithOllama(taskDescription, skill) {
-  const systemPrompt = `You are a specialized AI agent with expertise in ${skill}. Complete the given task concisely and accurately.`;
-  
-  const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+// ---------------------------------------------------------------------------
+// Capability → Ollama prompt mapping
+// ---------------------------------------------------------------------------
+const CAPABILITY_HANDLERS = {
+  'summarize.text.longform':  (input) =>
+    `Summarize the following text in 3-5 sentences:\n\n${input.text || JSON.stringify(input)}`,
+
+  'summarize.text.shortform': (input) =>
+    `Summarize in 1-2 sentences:\n\n${input.text || JSON.stringify(input)}`,
+
+  'review.code.general':      (input) =>
+    `Review this code and provide feedback on quality, bugs, and improvements:\n\n\`\`\`\n${
+      input.code || input.text || JSON.stringify(input)
+    }\n\`\`\``,
+
+  'analyze.sentiment':        (input) =>
+    `Analyze the sentiment of this text (positive/negative/neutral) and explain why:\n\n${
+      input.text || JSON.stringify(input)
+    }`,
+
+  'translate.text.en-ja':     (input) =>
+    `Translate the following text to Japanese:\n\n${input.text || JSON.stringify(input)}`,
+
+  'translate.text.ja-en':     (input) =>
+    `Translate the following text to English:\n\n${input.text || JSON.stringify(input)}`,
+};
+
+// Capabilities this worker advertises
+const SUPPORTED_CAPABILITIES = Object.keys(CAPABILITY_HANDLERS);
+
+// ---------------------------------------------------------------------------
+// API helpers
+// ---------------------------------------------------------------------------
+function apiHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (workerApiKey) h['X-API-Key'] = workerApiKey;
+  return h;
+}
+
+async function apiFetch(path, init = {}) {
+  const url = `${CLAWAGENT_URL}${path}`;
+  assertSafeUrl(url);
+  const res = await fetch(url, { ...init, headers: { ...apiHeaders(), ...(init.headers || {}) } });
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// 1. Register as an agent (if no API key provided)
+// ---------------------------------------------------------------------------
+async function register() {
+  console.log(`[${WORKER_NAME}] Registering with ClawAgent...`);
+  const data = await apiFetch('/api/agents/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: WORKER_NAME,
+      capabilities: SUPPORTED_CAPABILITIES,
+      webhook_url: '',          // polling mode – no webhook needed
+      pricing: { mode: 'free' },
+    }),
+  });
+  if (!data.ok) {
+    throw new Error(`Registration failed: ${JSON.stringify(data)}`);
+  }
+  workerApiKey = data.agent?.api_key || data.api_key;
+  console.log(`[${WORKER_NAME}] Registered. agent_id=${data.agent?.id}`);
+}
+
+// ---------------------------------------------------------------------------
+// 2. Execute a prompt via Ollama
+// ---------------------------------------------------------------------------
+async function callOllama(prompt, systemPrompt = '') {
+  const url = `${OLLAMA_URL}/api/generate`;
+  assertSafeUrl(url);
+
+  const body = {
+    model: OLLAMA_MODEL,
+    prompt,
+    stream: false,
+    options: { num_predict: 1024 },
+  };
+  if (systemPrompt) body.system = systemPrompt;
+
+  const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'qwen2.5:7b',
-      prompt: taskDescription,
-      system: systemPrompt,
-      stream: false,
-      options: { num_predict: 500 }
-    })
+    body: JSON.stringify(body),
   });
   const data = await res.json();
   return data.response || 'No response generated';
 }
 
-// 3. open bountyをポーリングして実行
-async function pollAndExecute() {
+// ---------------------------------------------------------------------------
+// 3. Poll /api/tasks for pending tasks and process them
+// ---------------------------------------------------------------------------
+async function pollAndProcess() {
+  let data;
   try {
-    // bounty一覧取得
-    const res = await fetch(`${CLAWAGENT_URL}/api/bounties`);
-    const data = await res.json();
-    const bounties = (data.bounties || []).filter(b => b.status === 'open');
-    
-    if (bounties.length === 0) {
-      console.log(`[${WORKER_NAME}] No open bounties`);
-      return;
-    }
-    
-    // スキルマッチするbountyを1つ選ぶ
-    const matched = bounties.find(b => 
-      WORKER_SKILLS.some(s => b.required_skill?.includes(s) || s.includes(b.required_skill))
-    ) || bounties[0];
-    
-    console.log(`[${WORKER_NAME}] Found bounty: ${matched.title}`);
-    
-    // claim
-    const claimRes = await fetch(`${CLAWAGENT_URL}/api/bounties/${matched.id}/claim`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${workerApiKey}` }
-    });
-    const claimData = await claimRes.json();
-    if (!claimData.ok) {
-      console.log(`[${WORKER_NAME}] Claim failed: ${JSON.stringify(claimData)}`);
-      return;
-    }
-    
-    console.log(`[${WORKER_NAME}] Claimed! Executing with Ollama...`);
-    
-    // Ollama で実行
-    const result = await executeWithOllama(matched.description, matched.required_skill);
-    console.log(`[${WORKER_NAME}] Result (first 100 chars): ${result.substring(0, 100)}...`);
-    
-    // 完了報告
-    const completeRes = await fetch(`${CLAWAGENT_URL}/api/bounties/${matched.id}/complete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${workerApiKey}` },
-      body: JSON.stringify({ result })
-    });
-    const completeData = await completeRes.json();
-    console.log(`[${WORKER_NAME}] Completed:`, JSON.stringify(completeData));
-    
+    data = await apiFetch('/api/tasks?status=pending');
   } catch (err) {
-    console.error(`[${WORKER_NAME}] Error:`, err.message);
+    console.error(`[${WORKER_NAME}] Failed to fetch tasks:`, err.message);
+    return;
+  }
+
+  const tasks = data.tasks || data || [];
+  const pending = Array.isArray(tasks)
+    ? tasks.filter(t => t.status === 'pending' || t.status === 'open')
+    : [];
+
+  if (pending.length === 0) {
+    console.log(`[${WORKER_NAME}] No pending tasks.`);
+    return;
+  }
+
+  // Find first task whose capability we handle
+  const task = pending.find(t => CAPABILITY_HANDLERS[t.capability]) || pending[0];
+  const handler = CAPABILITY_HANDLERS[task.capability];
+
+  if (!handler) {
+    console.log(`[${WORKER_NAME}] No handler for capability: ${task.capability} – skipping.`);
+    return;
+  }
+
+  console.log(`[${WORKER_NAME}] Processing task ${task.id} | capability: ${task.capability}`);
+
+  try {
+    // Build prompt from capability handler
+    const inputData = task.input || task.description || '';
+    const prompt = handler(typeof inputData === 'string' ? { text: inputData } : inputData);
+
+    // Run Ollama
+    const output = await callOllama(prompt);
+    console.log(`[${WORKER_NAME}] Ollama done. output[:80]: ${output.substring(0, 80)}...`);
+
+    // Submit result
+    const completeData = await apiFetch(`/api/tasks/${task.id}/complete`, {
+      method: 'POST',
+      body: JSON.stringify({ output, result: output }),
+    });
+    console.log(`[${WORKER_NAME}] Task ${task.id} completed:`, JSON.stringify(completeData).substring(0, 120));
+  } catch (err) {
+    console.error(`[${WORKER_NAME}] Error processing task ${task.id}:`, err.message);
+    // Attempt to mark task as failed
+    try {
+      await apiFetch(`/api/tasks/${task.id}/fail`, {
+        method: 'POST',
+        body: JSON.stringify({ error: err.message }),
+      });
+    } catch (_) {}
   }
 }
 
-// メインループ
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 async function main() {
-  console.log(`[${WORKER_NAME}] Starting Ollama worker...`);
-  console.log(`  Skills: ${WORKER_SKILLS.join(', ')}`);
-  
-  // 登録
+  console.log(`[${WORKER_NAME}] Starting Ollama Worker`);
+  console.log(`  ClawAgent : ${CLAWAGENT_URL}`);
+  console.log(`  Ollama    : ${OLLAMA_URL}`);
+  console.log(`  Model     : ${OLLAMA_MODEL}`);
+  console.log(`  Capabilities: ${SUPPORTED_CAPABILITIES.join(', ')}`);
+
   if (!workerApiKey) {
     await register();
+  } else {
+    console.log(`[${WORKER_NAME}] Using provided API key.`);
   }
-  
-  // 初回即実行
-  await pollAndExecute();
-  
-  // ポーリングループ
-  setInterval(pollAndExecute, POLL_INTERVAL_MS);
-  console.log(`[${WORKER_NAME}] Polling every ${POLL_INTERVAL_MS/1000}s...`);
+
+  // Initial poll
+  await pollAndProcess();
+
+  // Polling loop
+  setInterval(pollAndProcess, POLL_INTERVAL_MS);
+  console.log(`[${WORKER_NAME}] Polling every ${POLL_INTERVAL_MS / 1000}s…`);
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error('Fatal:', err.message);
+  process.exit(1);
+});

@@ -1,4 +1,4 @@
-// claw-network TypeScript definitions v0.5.0
+// claw-network TypeScript definitions v0.6.0
 
 export interface ClawNetworkOptions {
   /** Base URL for the Claw Network API. Defaults to https://clawagent-production.up.railway.app */
@@ -66,6 +66,11 @@ export interface CallResult {
   [key: string]: any
 }
 
+export interface WebSearchOptions {
+  /** Maximum number of results to return (default: 5) */
+  limit?: number
+}
+
 export declare class ClawNetwork {
   constructor(options?: ClawNetworkOptions)
 
@@ -102,6 +107,48 @@ export declare class ClawNetwork {
    * List all registered agents, optionally filtered by capability.
    */
   listAgents(capability?: string): Promise<any>
+
+  /**
+   * Search for capabilities using the web.search capability.
+   *
+   * @example
+   * const result = await sdk.webSearch('translate japanese', { limit: 3 })
+   */
+  webSearch(query: string, options?: WebSearchOptions): Promise<CallResult>
+
+  /**
+   * Scrape a web page via the web.scrape capability.
+   *
+   * @example
+   * const result = await sdk.webScrape('https://example.com')
+   */
+  webScrape(url: string): Promise<CallResult>
+
+  /**
+   * Convenience wrapper for registering a worker agent.
+   *
+   * @example
+   * const { agentId, apiKey } = await sdk.registerWorker(
+   *   'MyWorker',
+   *   ['summarize.text.longform', 'review.code.general'],
+   *   'https://my-server.com/webhook',
+   * )
+   */
+  registerWorker(
+    name: string,
+    capabilities: string[],
+    webhookUrl: string,
+    options?: Partial<RegisterOptions> & { pricing?: RegisterOptions['pricing'] },
+  ): Promise<RegisterResult>
+
+  /**
+   * Get the current status and result of a task by ID.
+   *
+   * @example
+   * const task = await sdk.getTask('task_abc123')
+   * console.log(task.status, task.output)
+   */
+  getTask(taskId: string): Promise<any>
 }
 
 export default ClawNetwork

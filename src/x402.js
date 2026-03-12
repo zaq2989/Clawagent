@@ -9,11 +9,16 @@ const FACILITATOR_URL = process.env.X402_FACILITATOR_URL || 'https://x402.xyz/fa
 const PLATFORM_ADDRESS = process.env.PLATFORM_FEE_ADDRESS || '0xe2f49C10D833a9969476Ed1b9B818C1a593F863d';
 const PLATFORM_FEE_BPS = parseInt(process.env.PLATFORM_FEE_BPS || '500'); // 500 bps = 5%
 
-// Base Sepolia USDC (EIP-3009 compatible)
-const BASE_SEPOLIA_USDC = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
-const NETWORK = 'base-sepolia';         // V1 network name
-const NETWORK_CAIP = 'eip155:84532';   // V2 CAIP-2 network id
-const AMOUNT = '1000';                  // 0.001 USDC (6 decimals)
+// Network config (base-sepolia or base-mainnet)
+const USDC_BY_NETWORK = {
+  'base-sepolia': { address: '0x036CbD53842c5426634e7929541eC2318f3dCF7e', caip: 'eip155:84532' },
+  'base-mainnet': { address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', caip: 'eip155:8453' },
+};
+const NETWORK = process.env.X402_NETWORK || 'base-sepolia';
+const NET_CONFIG = USDC_BY_NETWORK[NETWORK] || USDC_BY_NETWORK['base-sepolia'];
+const BASE_USDC = NET_CONFIG.address;
+const NETWORK_CAIP = NET_CONFIG.caip;
+const AMOUNT = process.env.X402_AMOUNT || '1000';  // 0.001 USDC (6 decimals)
 const MAX_TIMEOUT_SECONDS = 300;
 
 // Protected routes: method + path
@@ -47,7 +52,7 @@ function buildPaymentRequired(req) {
         outputSchema: {},
         payTo: PAYMENT_ADDRESS,
         maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
-        asset: BASE_SEPOLIA_USDC,
+        asset: BASE_USDC,
         extra: {
           name: 'USDC',
           version: '2',

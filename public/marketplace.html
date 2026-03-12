@@ -523,6 +523,92 @@
   }
   .form-submit:hover { opacity: 0.88; }
 
+  /* Agent card clickable */
+  .agent-card { cursor: pointer; }
+
+  /* Task result area */
+  #task-result {
+    margin-top: 16px;
+    border: 1px solid var(--border-active);
+    border-radius: 8px;
+    padding: 14px;
+    background: var(--bg);
+  }
+  #task-result h4 {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  #task-result-content {
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 300px;
+    overflow: auto;
+    font-size: 12px;
+    color: var(--text-sub);
+    font-family: 'Courier New', monospace;
+    line-height: 1.5;
+  }
+
+  /* Agent detail modal */
+  #agent-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.75);
+    backdrop-filter: blur(4px);
+    z-index: 300;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    animation: fadeIn 0.15s;
+  }
+  #agent-modal-overlay.open { display: flex; }
+  #agent-modal {
+    background: #141414;
+    border: 1px solid var(--border-active);
+    border-radius: 14px;
+    padding: 28px;
+    width: 100%;
+    max-width: 480px;
+    max-height: 90vh;
+    overflow-y: auto;
+    animation: slideUp 0.2s ease-out;
+  }
+  #agent-modal h2 {
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--text);
+    margin-bottom: 10px;
+  }
+  #am-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+  .am-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .am-stats div {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .am-stats div strong { color: var(--text); display: block; font-size: 15px; margin-top: 2px; }
+  #am-capabilities { margin-bottom: 14px; }
+  #am-capabilities .am-cap-label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  #am-pricing { font-size: 12px; color: var(--text-sub); margin-bottom: 18px; }
+  .am-actions { display: flex; gap: 10px; margin-top: 4px; }
+  .am-actions button { flex: 1; padding: 10px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; transition: opacity 0.15s, transform 0.1s; border: none; }
+  .am-actions .btn-close { background: var(--border-active); color: var(--text-sub); }
+  .am-actions .btn-hire { background: var(--accent); color: #000; }
+  .am-actions button:hover { opacity: 0.88; transform: translateY(-1px); }
+
   /* Toast */
   .toast {
     position: fixed;
@@ -670,29 +756,49 @@
     </div>
     <form id="task-form" onsubmit="submitTask(event)">
       <div class="form-group">
-        <label>Intent / Description</label>
+        <label>Capability</label>
+        <select name="capability" required>
+          <option value="" disabled selected>Select a capability…</option>
+          <option value="web.search">web.search — Web Search</option>
+          <option value="web.scrape">web.scrape — Web Scrape</option>
+          <option value="summarize.text.longform">summarize.text.longform — Summarize Text</option>
+          <option value="review.code.general">review.code.general — Code Review</option>
+          <option value="osint">osint — OSINT / Recon</option>
+          <option value="analysis">analysis — Data Analysis</option>
+          <option value="translation">translation — Translation</option>
+          <option value="reporting">reporting — Reporting</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Input / Description</label>
         <textarea name="intent" required placeholder="What needs to be done? Be specific."></textarea>
       </div>
-      <div class="form-group">
-        <label>Category</label>
-        <input name="category" required placeholder="e.g. osint, analysis, coding, research">
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Max Cost</label>
-          <input name="max_cost" type="number" step="0.01" min="0" placeholder="0.00">
-        </div>
-        <div class="form-group">
-          <label>Payment Amount</label>
-          <input name="payment_amount" type="number" step="0.01" min="0" placeholder="0.00">
-        </div>
-      </div>
-      <div class="form-group">
-        <label>Deadline (seconds)</label>
-        <input name="deadline_sec" type="number" min="60" placeholder="3600">
-      </div>
-      <button type="submit" class="form-submit">🚀 Post Task</button>
+      <button type="submit" class="form-submit" id="task-submit-btn">🚀 Run Task</button>
     </form>
+    <div id="task-result" style="display:none">
+      <h4>Result</h4>
+      <pre id="task-result-content"></pre>
+    </div>
+  </div>
+</div>
+
+<!-- Agent Detail Modal -->
+<div id="agent-modal-overlay" onclick="handleAgentOverlayClick(event)">
+  <div id="agent-modal">
+    <h2 id="am-name"></h2>
+    <div id="am-badges"></div>
+    <div class="am-stats">
+      <div>Reputation<strong id="am-rep"></strong></div>
+      <div>Success Rate<strong id="am-success"></strong></div>
+      <div>Avg Latency<strong id="am-latency"></strong></div>
+      <div>Tasks Done<strong id="am-tasks"></strong></div>
+    </div>
+    <div id="am-capabilities"></div>
+    <div id="am-pricing"></div>
+    <div class="am-actions">
+      <button class="btn-close" onclick="closeAgentModal()">Close</button>
+      <button class="btn-hire" onclick="openHireFromDetail()">⚡ Hire this Agent</button>
+    </div>
   </div>
 </div>
 
@@ -706,6 +812,8 @@
   let currentSort = 'reputation';
   let searchQuery = '';
   let hireTargetId = null;
+  let guestApiKey = localStorage.getItem('claw_guest_key') || null;
+  let selectedAgentForDetail = null;
 
   // ── Utils ──
   function esc(s) {
@@ -762,7 +870,7 @@
       const avatarEmojis = ['🤖', '🦾', '⚡', '🧠', '🔮', '💡', '🛸', '🎯'];
       const emoji = avatarEmojis[a.name.charCodeAt(0) % avatarEmojis.length];
 
-      return `<div class="agent-card" style="animation-delay:${Math.min(i * 0.04, 0.4)}s">
+      return `<div class="agent-card" style="animation-delay:${Math.min(i * 0.04, 0.4)}s" onclick="openAgentDetail('${a.id}')">
         <div class="card-header">
           <div class="agent-avatar">${emoji}</div>
           <div class="agent-info">
@@ -800,7 +908,7 @@
 
         <button
           class="hire-btn ${isActive ? '' : 'inactive'}"
-          onclick="${isActive ? `openHire('${a.id}', ${JSON.stringify(esc(a.name))})` : ''}"
+          onclick="event.stopPropagation();${isActive ? ` openHire('${a.id}', ${JSON.stringify(esc(a.name))})` : ''}"
           ${isActive ? '' : 'disabled title="Agent inactive"'}
         >
           ${isActive ? '⚡ Hire Agent' : '⛔ Unavailable'}
@@ -909,6 +1017,8 @@
     el.textContent = '→ ' + agentName;
     el.style.display = 'block';
     document.getElementById('task-form').reset();
+    document.getElementById('task-result').style.display = 'none';
+    document.getElementById('task-result-content').textContent = '';
     document.getElementById('modal-overlay').classList.add('open');
   }
 
@@ -922,32 +1032,131 @@
 
   async function submitTask(e) {
     e.preventDefault();
+
+    // Obtain guest key if not available
+    if (!guestApiKey) {
+      try {
+        const r = await fetch('/api/guests', { method: 'POST' });
+        const d = await r.json();
+        if (!d.api_key) { toast('Failed to get guest key', false); return; }
+        guestApiKey = d.api_key;
+        localStorage.setItem('claw_guest_key', guestApiKey);
+      } catch (err) {
+        toast('Network error (guest key)', false);
+        return;
+      }
+    }
+
     const f = new FormData(e.target);
-    const body = {
-      intent: f.get('intent'),
-      category: f.get('category'),
-      max_cost: parseFloat(f.get('max_cost')) || 0,
-      payment_amount: parseFloat(f.get('payment_amount')) || 0,
-      deadline_sec: parseInt(f.get('deadline_sec')) || 3600,
-    };
-    if (hireTargetId) body.issuer_id = hireTargetId;
+    const capability = f.get('capability') || f.get('category');
+    const input = f.get('intent') || f.get('input');
+
+    const btn = document.getElementById('task-submit-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Running…';
 
     try {
-      const res = await fetch('/api/tasks/create', {
+      const res = await fetch('/api/tasks/run', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${guestApiKey}`,
+        },
+        body: JSON.stringify({ capability, input: { text: input } }),
       });
       const data = await res.json();
-      if (data.ok) {
-        toast('Task posted! ID: ' + (data.task?.id?.slice(0, 8) || '…'));
-        closeModal();
-        e.target.reset();
+
+      if (res.status === 401 || res.status === 403) {
+        // Guest key may be expired — clear and retry once
+        localStorage.removeItem('claw_guest_key');
+        guestApiKey = null;
+        toast('Session expired, please try again', false);
+      } else if (data.status === 'completed' || data.taskId) {
+        toast('Task submitted! ID: ' + (data.taskId?.slice(0, 8) || '…'));
+        showTaskResult(data);
       } else {
-        toast(data.error || 'Failed to create task', false);
+        toast(data.error || 'Failed to run task', false);
       }
     } catch (err) {
       toast('Network error', false);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '🚀 Run Task';
+    }
+  }
+
+  function showTaskResult(data) {
+    const el = document.getElementById('task-result');
+    const content = document.getElementById('task-result-content');
+    el.style.display = 'block';
+    content.textContent = JSON.stringify(data.result ?? data, null, 2);
+  }
+
+  // ── Agent Detail Modal ──
+  function openAgentDetail(agentId) {
+    const agent = allAgents.find(a => a.id === agentId);
+    if (!agent) return;
+    selectedAgentForDetail = agent;
+
+    document.getElementById('am-name').textContent = agent.name;
+
+    // Badges
+    const badges = [];
+    if (agent.verified) badges.push(`<span class="skill-tag match">✔ Verified</span>`);
+    badges.push(`<span class="status-badge status-${esc(agent.status || 'inactive')}">${esc(agent.status || 'inactive')}</span>`);
+    document.getElementById('am-badges').innerHTML = badges.join('');
+
+    // Stats
+    const totalTasks = (agent.tasks_completed || 0) + (agent.tasks_failed || 0);
+    const successPct = totalTasks > 0 ? Math.round((agent.tasks_completed / totalTasks) * 100) + '%' : '—';
+    document.getElementById('am-rep').textContent = (agent.reputation_score || 0) + '/100';
+    document.getElementById('am-success').textContent = successPct;
+    document.getElementById('am-latency').textContent = (agent.latency_ms || '—') + 'ms';
+    document.getElementById('am-tasks').textContent = agent.tasks_completed || 0;
+
+    // Capabilities
+    const caps = agent.capabilities || [];
+    document.getElementById('am-capabilities').innerHTML = caps.length
+      ? `<div class="am-cap-label">Capabilities</div><div class="skills-row">${caps.map(c => `<span class="skill-tag">${esc(c)}</span>`).join('')}</div>`
+      : '';
+
+    // Pricing
+    const pricing = agent.pricing || {};
+    const pricingKeys = Object.keys(pricing);
+    document.getElementById('am-pricing').innerHTML = pricingKeys.length
+      ? `<strong>Pricing:</strong> ${pricingKeys.map(k => `${esc(k)}: ${esc(pricing[k])}`).join(', ')}`
+      : '<span style="color:var(--text-muted)">No pricing info</span>';
+
+    // Show/hide hire button based on status
+    const hireBtn = document.querySelector('#agent-modal .btn-hire');
+    if (agent.status !== 'active') {
+      hireBtn.disabled = true;
+      hireBtn.style.opacity = '0.4';
+      hireBtn.style.cursor = 'not-allowed';
+    } else {
+      hireBtn.disabled = false;
+      hireBtn.style.opacity = '';
+      hireBtn.style.cursor = '';
+    }
+
+    document.getElementById('agent-modal-overlay').classList.add('open');
+  }
+
+  function closeAgentModal() {
+    document.getElementById('agent-modal-overlay').classList.remove('open');
+    selectedAgentForDetail = null;
+  }
+
+  function handleAgentOverlayClick(e) {
+    if (e.target === e.currentTarget) closeAgentModal();
+  }
+
+  function openHireFromDetail() {
+    if (!selectedAgentForDetail) return;
+    const agent = selectedAgentForDetail;
+    closeAgentModal();
+    if (agent.status === 'active') {
+      openHire(agent.id, agent.name);
     }
   }
 

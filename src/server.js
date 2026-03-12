@@ -116,6 +116,34 @@ const federationPeerLimiter = rateLimit({
   message: { ok: false, error: 'Federation peer registration rate limit exceeded. Try again later.' },
 });
 
+// Rate limiter for /api/guests (10 req/hour per IP)
+const guestKeyLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.headers['x-forwarded-for']?.split(',')[0]?.trim() || ipKeyGenerator(req),
+  message: { ok: false, error: 'Guest key rate limit exceeded. Try again later.' },
+});
+
+// POST /api/guests — issue a temporary guest API key (no auth required, for marketplace use)
+app.post('/api/guests', guestKeyLimiter, (req, res) => {
+  const crypto = require('crypto');
+  const db = getDb();
+  const id = crypto.randomUUID();
+  const apiKey = crypto.randomUUID();
+  const hashedKey = crypto.createHash('sha256').update(apiKey).digest('hex');
+  const now = Date.now();
+  const expiresAt = now + 24 * 60 * 60 * 1000; // 24 hours
+  const name = `Guest-${id.slice(0, 8)}`;
+
+  db.prepare(
+    `INSERT INTO agents (id, name, type, capabilities, api_key, bond_amount, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, name, 'guest', JSON.stringify([]), hashedKey, 0, now);
+
+  res.json({ ok: true, api_key: apiKey, expires_at: expiresAt });
+});
+
 // Apply specific rate limiters
 app.post('/api/agents/register', registerLimiter);
 app.post('/api/tasks/create', taskCreateLimiter);

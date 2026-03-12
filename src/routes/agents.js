@@ -142,6 +142,7 @@ router.get('/', (req, res) => {
   ).all();
   const agents = rows
     .filter(a => {
+      if (a.type === 'guest') return false; // hide guest keys from marketplace
       if (!capability) return true;
       let caps = [];
       try { caps = JSON.parse(a.capabilities || '[]'); } catch (_) {}

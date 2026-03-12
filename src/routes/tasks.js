@@ -27,29 +27,95 @@ const statusValidation = [
   body('worker_id').optional().isString(),
 ];
 
-// POST /api/tasks/create (auth required)
-router.post('/create', apiKeyAuth, createTaskValidation, async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
-
+// POST /api/tasks/create — x402-gated (no apiKeyAuth); routes capability like /run
+router.post('/create', async (req, res) => {
   try {
-    const { parent_id, category, intent, input_schema, input_data, output_contract, success_criteria, deadline_sec, max_cost, payment_amount, issuer_id } = req.body;
-    const id = uuidv4();
-    const now = Date.now();
+    // Accept both legacy fields (category/intent/input_data) and new fields (capability/input)
+    const { category, intent, input_data, capability: capField, input: inputField } = req.body;
+    const capability = capField || category || intent;
+    const input = inputField || input_data || {};
 
-    const depthRow = parent_id ? await get('SELECT depth FROM tasks WHERE id = ?', [parent_id]) : null;
-    const depth = depthRow ? (depthRow.depth || 0) + 1 : 0;
+    if (!capability) {
+      return res.status(400).json({ ok: false, error: '`capability` (or `category`/`intent`) is required' });
+    }
+
+    const taskId = uuidv4();
+    const now   = Date.now();
+
+    // ── Built-in: web.search ──────────────────────────────────────────────────
+    if (capability === 'web.search') {
+      const { webSearch } = require('../capabilities/webSearch');
+      const queryStr = (typeof input === 'string') ? input : (input?.query || input?.text || '');
+      if (!queryStr) {
+        return res.status(400).json({ ok: false, error: '`input.query` or `input.text` is required for web.search' });
+      }
+      const limitVal = input?.limit || 5;
+      let results;
+      try { results = await webSearch(queryStr, { limit: limitVal }); }
+      catch (searchErr) { return res.status(502).json({ ok: false, error: 'Web search failed', detail: searchErr.message }); }
+
+      await run(
+        `INSERT INTO tasks (id, category, intent, input_data, status, result, created_at, completed_at)
+         VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)`,
+        [taskId, 'web.search', queryStr, JSON.stringify(input || {}), JSON.stringify(results), now, now]
+      );
+      return res.json({ ok: true, taskId, status: 'completed', result: results });
+    }
+
+    // ── Built-in: web.scrape ──────────────────────────────────────────────────
+    if (capability === 'web.scrape') {
+      const { webScrape } = require('../capabilities/webSearch');
+      const urlStr = (typeof input === 'string') ? input : (input?.url || '');
+      if (!urlStr) {
+        return res.status(400).json({ ok: false, error: '`input.url` is required for web.scrape' });
+      }
+      let result;
+      try { result = await webScrape(urlStr); }
+      catch (scrapeErr) { return res.status(502).json({ ok: false, error: 'Web scrape failed', detail: scrapeErr.message }); }
+
+      await run(
+        `INSERT INTO tasks (id, category, intent, input_data, status, result, created_at, completed_at)
+         VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)`,
+        [taskId, 'web.scrape', urlStr, JSON.stringify(input || {}), JSON.stringify(result), now, now]
+      );
+      return res.json({ ok: true, taskId, status: 'completed', result });
+    }
+
+    // ── External capability: find best matching agent ─────────────────────────
+    const allActive = await query("SELECT * FROM agents WHERE status = 'active'", []);
+    const matching  = allActive.filter(agent => {
+      const caps = JSON.parse(agent.capabilities || '[]');
+      return caps.includes(capability);
+    });
+
+    if (matching.length === 0) {
+      return res.status(404).json({ ok: false, error: `No active agent found for capability: ${capability}` });
+    }
+
+    const best = pickBestAgent(matching);
+    const isPollingMode = !best.webhook_url || best.webhook_url === '' || best.webhook_url.startsWith('internal://');
+    const taskStatus = isPollingMode ? 'pending' : 'assigned';
 
     await run(
-      `INSERT INTO tasks (id, parent_id, depth, category, intent, input_schema, input_data, output_contract, success_criteria, deadline_sec, max_cost, payment_amount, issuer_id, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
-      [id, parent_id || null, depth, category, intent,
-        JSON.stringify(input_schema || {}), JSON.stringify(input_data || {}),
-        JSON.stringify(output_contract || {}), JSON.stringify(success_criteria || {}),
-        deadline_sec || null, max_cost || null, payment_amount || null, issuer_id || null, now]
+      `INSERT INTO tasks (id, category, intent, input_data, worker_id, status, created_at, assigned_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [taskId, capability, capability, JSON.stringify(input || {}), best.id, taskStatus, now, now]
     );
 
-    res.json({ ok: true, task: { id, status: 'open', created_at: now } });
+    if (!isPollingMode) {
+      notifyWebhook(best.webhook_url, 'task_assigned', {
+        task_id: taskId, capability, input, worker_id: best.id,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      taskId,
+      status: taskStatus,
+      agentId: best.id,
+      agentName: best.name,
+      score: Math.round(scoreAgent(best) * 10000) / 10000,
+    });
   } catch (err) {
     console.error('[tasks/create] Error:', err);
     res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
@@ -216,10 +282,10 @@ function pickBestAgent(agents) {
 
 // POST /api/tasks/run — capability-based task execution with load balancing
 // capability=web.search → handled internally (no webhook)
-// other capabilities → routed to best matching agent
+// other capabilities → routed to best matching agent (agentId overrides LB)
 router.post('/run', apiKeyAuth, async (req, res) => {
   try {
-    const { capability, input } = req.body;
+    const { capability, input, agentId: targetAgentId } = req.body;
 
     if (!capability) {
       return res.status(400).json({ ok: false, error: '`capability` is required' });
@@ -289,7 +355,12 @@ router.post('/run', apiKeyAuth, async (req, res) => {
       return res.status(404).json({ ok: false, error: `No active agent found for capability: ${capability}` });
     }
 
-    const best = pickBestAgent(matching);
+    // Honour explicit agentId if the agent is capable; fall back to load balancing
+    let best;
+    if (targetAgentId) {
+      best = matching.find(a => a.id === targetAgentId);
+    }
+    if (!best) best = pickBestAgent(matching);
 
     // polling mode: webhook_url is empty or 'internal://' — keep status as 'pending'
     // so the worker can poll GET /api/tasks?status=pending

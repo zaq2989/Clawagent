@@ -789,12 +789,12 @@
           <option value="" disabled selected>Select a capability…</option>
           <option value="web.search">web.search — Web Search</option>
           <option value="web.scrape">web.scrape — Web Scrape</option>
-          <option value="summarize.text.longform">summarize.text.longform — Summarize Text</option>
+          <option value="summarize.text.longform">summarize.text.longform — Summarize (Long)</option>
+          <option value="summarize.text.shortform">summarize.text.shortform — Summarize (Short)</option>
           <option value="review.code.general">review.code.general — Code Review</option>
-          <option value="osint">osint — OSINT / Recon</option>
-          <option value="analysis">analysis — Data Analysis</option>
-          <option value="translation">translation — Translation</option>
-          <option value="reporting">reporting — Reporting</option>
+          <option value="analyze.sentiment">analyze.sentiment — Sentiment Analysis</option>
+          <option value="translate.text.en-ja">translate.text.en-ja — Translate EN→JA</option>
+          <option value="translate.text.ja-en">translate.text.ja-en — Translate JA→EN</option>
         </select>
       </div>
       <div class="form-group">
@@ -1158,7 +1158,7 @@
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${guestApiKey}`,
         },
-        body: JSON.stringify({ capability, input: { text: input } }),
+        body: JSON.stringify({ capability, input: { text: input }, ...(hireTargetId ? { agentId: hireTargetId } : {}) }),
       });
       const data = await res.json();
 

@@ -190,13 +190,35 @@ router.post('/run', apiKeyAuth, async (req, res) => {
         return res.status(502).json({ ok: false, error: 'Web search failed', detail: searchErr.message });
       }
 
-      // Save task as completed
       db.prepare(`
         INSERT INTO tasks (id, category, intent, input_data, status, result, created_at, completed_at)
         VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)
       `).run(taskId, 'web.search', queryStr, JSON.stringify(input || {}), JSON.stringify(results), now, now);
 
       return res.json({ taskId, status: 'completed', result: results });
+    }
+
+    // ── Built-in: web.scrape ────────────────────────────────────────────────
+    if (capability === 'web.scrape') {
+      const { webScrape } = require('../capabilities/webSearch');
+      const urlStr = (typeof input === 'string') ? input : (input?.url || '');
+      if (!urlStr) {
+        return res.status(400).json({ ok: false, error: '`input.url` is required for web.scrape' });
+      }
+
+      let result;
+      try {
+        result = await webScrape(urlStr);
+      } catch (scrapeErr) {
+        return res.status(502).json({ ok: false, error: 'Web scrape failed', detail: scrapeErr.message });
+      }
+
+      db.prepare(`
+        INSERT INTO tasks (id, category, intent, input_data, status, result, created_at, completed_at)
+        VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)
+      `).run(taskId, 'web.scrape', urlStr, JSON.stringify(input || {}), JSON.stringify(result), now, now);
+
+      return res.json({ taskId, status: 'completed', result });
     }
 
     // ── External capability: find best matching agent ────────────────────────

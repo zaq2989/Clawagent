@@ -72,6 +72,13 @@ const SEED_AGENTS = [
     webhook_url: 'internal://web.search',
     bond: 0,   rep: 100,
   },
+  {
+    name: 'Claw Web Scraper',
+    type: 'builtin',
+    capabilities: ['web.scrape'],
+    webhook_url: 'internal://web.scrape',
+    bond: 0,   rep: 100,
+  },
 ];
 
 function seedAgents(db) {

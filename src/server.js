@@ -156,6 +156,18 @@ app.post('/federation/peers', federationPeerLimiter);
 // Swagger UI (public)
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
+// x402 payment info (public) — returns network/amount/payTo for frontend
+try {
+  const { NETWORK, AMOUNT, PAYMENT_ADDRESS } = require('./x402');
+  app.get('/api/x402/info', (req, res) => {
+    res.json({ network: NETWORK, amount: AMOUNT, payTo: PAYMENT_ADDRESS });
+  });
+} catch (e) {
+  app.get('/api/x402/info', (req, res) => {
+    res.status(503).json({ error: 'x402 not configured' });
+  });
+}
+
 // Health check (public) — enhanced
 app.get('/api/health', async (req, res) => {
   const health = {

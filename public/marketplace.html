@@ -653,6 +653,31 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  /* ── Pay Mode Toggle ── */
+  .pay-mode-toggle {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .mode-btn {
+    flex: 1;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border-active);
+    background: transparent;
+    color: var(--text-sub);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .mode-btn:hover { border-color: var(--accent); color: var(--text); }
+  .mode-btn.active {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
   /* Responsive */
   @media (max-width: 640px) {
     .header-inner { padding: 0 16px; }
@@ -666,6 +691,9 @@
     .modal { padding: 20px; }
   }
 </style>
+<!-- ethers.js v6 (required for x402 wallet payment) -->
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<script src="/x402-client.js"></script>
 </head>
 <body>
 
@@ -773,6 +801,18 @@
         <label>Input / Description</label>
         <textarea name="intent" required placeholder="What needs to be done? Be specific."></textarea>
       </div>
+      <!-- Payment mode toggle -->
+      <div class="form-group">
+        <label>Payment Mode</label>
+        <div class="pay-mode-toggle">
+          <button type="button" id="mode-guest" class="mode-btn active" onclick="setPayMode('guest')">🎟 Free (Guest)</button>
+          <button type="button" id="mode-x402" class="mode-btn" onclick="setPayMode('x402')">💳 Pay with Wallet (x402)</button>
+        </div>
+        <div id="x402-info" style="display:none; margin-top:6px; font-size:12px; color:var(--text-muted)">
+          Requires MetaMask on Base Sepolia · 0.001 USDC per task
+        </div>
+      </div>
+
       <button type="submit" class="form-submit" id="task-submit-btn">🚀 Run Task</button>
     </form>
     <div id="task-result" style="display:none">
@@ -814,6 +854,17 @@
   let hireTargetId = null;
   let guestApiKey = localStorage.getItem('claw_guest_key') || null;
   let selectedAgentForDetail = null;
+  let payMode = 'guest'; // 'guest' | 'x402'
+
+  // ── Pay Mode ──
+  function setPayMode(mode) {
+    payMode = mode;
+    document.getElementById('mode-guest').classList.toggle('active', mode === 'guest');
+    document.getElementById('mode-x402').classList.toggle('active', mode === 'x402');
+    document.getElementById('x402-info').style.display = mode === 'x402' ? 'block' : 'none';
+    const btn = document.getElementById('task-submit-btn');
+    btn.textContent = mode === 'x402' ? '💳 Pay & Run Task' : '🚀 Run Task';
+  }
 
   // ── Utils ──
   function esc(s) {
@@ -1008,6 +1059,10 @@
   function openPostTask() {
     hireTargetId = null;
     document.getElementById('modal-agent-target').style.display = 'none';
+    document.getElementById('task-form').reset();
+    document.getElementById('task-result').style.display = 'none';
+    document.getElementById('task-result-content').textContent = '';
+    setPayMode('guest');
     document.getElementById('modal-overlay').classList.add('open');
   }
 
@@ -1019,6 +1074,7 @@
     document.getElementById('task-form').reset();
     document.getElementById('task-result').style.display = 'none';
     document.getElementById('task-result-content').textContent = '';
+    setPayMode('guest');
     document.getElementById('modal-overlay').classList.add('open');
   }
 
@@ -1033,27 +1089,67 @@
   async function submitTask(e) {
     e.preventDefault();
 
-    // Obtain guest key if not available
-    if (!guestApiKey) {
-      try {
-        const r = await fetch('/api/guests', { method: 'POST' });
-        const d = await r.json();
-        if (!d.api_key) { toast('Failed to get guest key', false); return; }
-        guestApiKey = d.api_key;
-        localStorage.setItem('claw_guest_key', guestApiKey);
-      } catch (err) {
-        toast('Network error (guest key)', false);
-        return;
-      }
-    }
-
     const f = new FormData(e.target);
     const capability = f.get('capability') || f.get('category');
     const input = f.get('intent') || f.get('input');
 
     const btn = document.getElementById('task-submit-btn');
     btn.disabled = true;
+    const origLabel = payMode === 'x402' ? '💳 Pay & Run Task' : '🚀 Run Task';
     btn.textContent = '⏳ Running…';
+
+    // ── x402 payment flow ──
+    if (payMode === 'x402') {
+      try {
+        if (!window.X402Client) throw new Error('x402 client not loaded');
+
+        const body = JSON.stringify({ capability, input: { text: input } });
+        const res = await X402Client.fetchWithX402('/api/tasks/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+        });
+        const data = await res.json();
+
+        if (data.ok || data.taskId || data.task) {
+          toast('✅ Task created via x402 payment!');
+          showTaskResult(data);
+        } else {
+          toast(data.error || 'x402 payment failed', false);
+        }
+      } catch (err) {
+        // MetaMask not installed → suggest guest mode
+        if (err.message && err.message.includes('No wallet')) {
+          toast('⚠️ ' + err.message + ' Switching to Guest mode.', false);
+          setPayMode('guest');
+        } else if (err.message && err.message.includes('user rejected')) {
+          toast('Payment cancelled by user.', false);
+        } else {
+          toast('Wallet error: ' + (err.message || 'Unknown error'), false);
+        }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = origLabel;
+      }
+      return;
+    }
+
+    // ── Guest flow (existing, unchanged) ──
+    // Obtain guest key if not available
+    if (!guestApiKey) {
+      try {
+        const r = await fetch('/api/guests', { method: 'POST' });
+        const d = await r.json();
+        if (!d.api_key) { toast('Failed to get guest key', false); btn.disabled = false; btn.textContent = origLabel; return; }
+        guestApiKey = d.api_key;
+        localStorage.setItem('claw_guest_key', guestApiKey);
+      } catch (err) {
+        toast('Network error (guest key)', false);
+        btn.disabled = false;
+        btn.textContent = origLabel;
+        return;
+      }
+    }
 
     try {
       const res = await fetch('/api/tasks/run', {
@@ -1081,7 +1177,7 @@
       toast('Network error', false);
     } finally {
       btn.disabled = false;
-      btn.textContent = '🚀 Run Task';
+      btn.textContent = origLabel;
     }
   }
 

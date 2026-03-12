@@ -117,12 +117,13 @@ const federationPeerLimiter = rateLimit({
 });
 
 // Rate limiter for /api/guests (10 req/hour per IP)
+// Note: trust proxy is set, so req.ip correctly uses X-Forwarded-For when behind Railway's LB
 const guestKeyLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.headers['x-forwarded-for']?.split(',')[0]?.trim() || ipKeyGenerator(req),
+  keyGenerator: (req) => ipKeyGenerator(req.ip || '127.0.0.1'),
   message: { ok: false, error: 'Guest key rate limit exceeded. Try again later.' },
 });
 

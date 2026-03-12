@@ -59,7 +59,7 @@ async function handleRegister(req, res) {
   if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
 
   try {
-    const { name, type, capabilities, bond_amount, pricing, input_schema, output_schema, description, signature, nonce, capability_version } = req.body;
+    const { name, type, capabilities, bond_amount, pricing, input_schema, output_schema, description, signature, nonce, capability_version, payment_address } = req.body;
     // Accept 'endpoint' as alias for 'webhook_url'
     const webhook_url = req.body.webhook_url || req.body.endpoint || null;
 
@@ -102,7 +102,7 @@ async function handleRegister(req, res) {
     const now = Date.now();
 
     await run(
-      `INSERT INTO agents (id, name, type, capabilities, api_key, bond_amount, webhook_url, pricing, input_schema, output_schema, description, owner_address, verified, capability_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agents (id, name, type, capabilities, api_key, bond_amount, webhook_url, pricing, input_schema, output_schema, description, owner_address, verified, capability_version, payment_address, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id, name, type || 'ai',
         JSON.stringify(parsedCapabilities),
@@ -116,6 +116,7 @@ async function handleRegister(req, res) {
         owner_address,
         verified,
         capVersion,
+        payment_address || null,
         now,
       ]
     );

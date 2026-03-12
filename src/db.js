@@ -167,6 +167,19 @@ async function initSchema() {
       last_error TEXT DEFAULT NULL,
       public_key TEXT DEFAULT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS fee_ledger (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      gross_amount TEXT NOT NULL,
+      platform_fee TEXT NOT NULL,
+      agent_payout TEXT NOT NULL,
+      platform_address TEXT NOT NULL,
+      agent_address TEXT,
+      settled INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
   `;
 
   if (USE_POSTGRES) {
@@ -220,6 +233,7 @@ async function migrate() {
     await addIfMissing('verified',           'INTEGER DEFAULT 0');
     await addIfMissing('capability_version', "TEXT DEFAULT 'v1'");
     await addIfMissing('payment_methods',    "TEXT DEFAULT '[\"x402\"]'");
+    await addIfMissing('payment_address',    'TEXT');
 
     // Generate api_keys for existing agents that don't have one
     const { rows: noKey } = await client.query('SELECT id FROM agents WHERE api_key IS NULL');
@@ -258,6 +272,7 @@ async function migrate() {
     addIfMissing('verified',           'INTEGER DEFAULT 0');
     addIfMissing('capability_version', "TEXT DEFAULT 'v1'");
     addIfMissing('payment_methods',    "TEXT DEFAULT '[\"x402\"]'");
+    addIfMissing('payment_address',    'TEXT');
   }
 }
 
@@ -381,6 +396,18 @@ function getDb() {
         last_seen INTEGER DEFAULT NULL, last_error TEXT DEFAULT NULL,
         public_key TEXT DEFAULT NULL
       );
+      CREATE TABLE IF NOT EXISTS fee_ledger (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        gross_amount TEXT NOT NULL,
+        platform_fee TEXT NOT NULL,
+        agent_payout TEXT NOT NULL,
+        platform_address TEXT NOT NULL,
+        agent_address TEXT,
+        settled INTEGER DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );
     `;
     db.exec(sqliteDdl);
 
@@ -406,6 +433,7 @@ function getDb() {
     addIfMissing('verified',           'INTEGER DEFAULT 0');
     addIfMissing('capability_version', "TEXT DEFAULT 'v1'");
     addIfMissing('payment_methods',    "TEXT DEFAULT '[\"x402\"]'");
+    addIfMissing('payment_address',    'TEXT');
 
     seedAgents(db);
 

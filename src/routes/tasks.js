@@ -6,6 +6,7 @@ const { updateReputation } = require('./reputation');
 const { circuitBreaker } = require('../circuit');
 const { apiKeyAuth } = require('../middleware/auth');
 const { notifyWebhook } = require('../webhook');
+const { PLATFORM_ADDRESS, PLATFORM_FEE_BPS } = require('../x402');
 
 const router = express.Router();
 
@@ -123,6 +124,33 @@ router.patch('/:id/status', apiKeyAuth, statusValidation, async (req, res) => {
           category: task.category,
           payment_amount: task.payment_amount,
         });
+      }
+    }
+
+    // Record platform fee ledger entry on task completion
+    if (status === 'completed' && effectiveWorkerId) {
+      try {
+        const grossAmount = BigInt(1000); // 0.001 USDC (6 decimals)
+        const platformFee = grossAmount * BigInt(PLATFORM_FEE_BPS) / BigInt(10000);
+        const agentPayout = grossAmount - platformFee;
+        const agentInfo = await get('SELECT payment_address FROM agents WHERE id = ?', [effectiveWorkerId]);
+        await run(
+          `INSERT INTO fee_ledger (id, task_id, agent_id, gross_amount, platform_fee, agent_payout, platform_address, agent_address, settled, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+          [
+            uuidv4(),
+            req.params.id,
+            effectiveWorkerId,
+            grossAmount.toString(),
+            platformFee.toString(),
+            agentPayout.toString(),
+            PLATFORM_ADDRESS,
+            agentInfo?.payment_address || null,
+            Date.now(),
+          ]
+        );
+      } catch (feeErr) {
+        console.error('[tasks/:id/status] fee_ledger insert error:', feeErr);
       }
     }
 

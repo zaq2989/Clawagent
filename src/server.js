@@ -15,7 +15,9 @@ const path = require('path');
 const helmet = require('helmet');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
-const { getDb, get: dbGet, USE_POSTGRES } = require('./db');
+const { getDb, get: dbGet, query: dbQuery, USE_POSTGRES } = require('./db');
+const { PLATFORM_ADDRESS, PLATFORM_FEE_BPS } = require('./x402');
+const { ADMIN_TOKEN } = require('./config/auth');
 const { updateReputation } = require('./routes/reputation');
 const { circuitBreaker } = require('./circuit');
 const { apiKeyAuth } = require('./middleware/auth');
@@ -250,6 +252,31 @@ app.post('/api/reputation/update', apiKeyAuth, reputationValidation, (req, res) 
   else if (event === 'completed') circuitBreaker.recordSuccess(agent_id);
 
   res.json({ ok: true, ...result });
+});
+
+// ── Admin auth middleware ──────────────────────────────────────────────────────
+function adminAuth(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token || token !== ADMIN_TOKEN) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized: valid admin token required' });
+  }
+  next();
+}
+
+// GET /api/fees/ledger — admin: list unsettled fee_ledger entries
+app.get('/api/fees/ledger', adminAuth, async (req, res) => {
+  try {
+    const rows = await dbQuery(
+      'SELECT * FROM fee_ledger WHERE settled = 0 ORDER BY created_at DESC LIMIT 100',
+      []
+    );
+    const total = rows.reduce((sum, r) => sum + BigInt(r.agent_payout), BigInt(0));
+    res.json({ ok: true, pending: rows, totalAgentPayout: total.toString() });
+  } catch (err) {
+    logger.error('[fees/ledger] Error', { error: err.message });
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
 });
 
 // Initialize DB on startup

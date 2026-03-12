@@ -5,6 +5,10 @@
 const PAYMENT_ADDRESS = process.env.X402_ADDRESS || '0x0000000000000000000000000000000000000000';
 const FACILITATOR_URL = process.env.X402_FACILITATOR_URL || 'https://x402.xyz/facilitator';
 
+// Platform fee configuration
+const PLATFORM_ADDRESS = process.env.PLATFORM_FEE_ADDRESS || '0xe2f49C10D833a9969476Ed1b9B818C1a593F863d';
+const PLATFORM_FEE_BPS = parseInt(process.env.PLATFORM_FEE_BPS || '500'); // 500 bps = 5%
+
 // Base Sepolia USDC (EIP-3009 compatible)
 const BASE_SEPOLIA_USDC = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
 const NETWORK = 'base-sepolia';         // V1 network name
@@ -78,4 +82,4 @@ function createX402Middleware() {
   };
 }
 
-module.exports = { createX402Middleware, PAYMENT_ADDRESS, NETWORK, AMOUNT };
+module.exports = { createX402Middleware, PAYMENT_ADDRESS, NETWORK, AMOUNT, PLATFORM_ADDRESS, PLATFORM_FEE_BPS };

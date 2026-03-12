@@ -1,6 +1,7 @@
 // src/routes/stats.js — Monitoring Dashboard: GET /api/stats
 const express = require('express');
 const { query, run, get } = require('../db');
+const { PLATFORM_ADDRESS, PLATFORM_FEE_BPS } = require('../x402');
 
 const router = express.Router();
 
@@ -74,6 +75,20 @@ router.get('/', async (req, res) => {
       createdAt:  row.createdAt,
     }));
 
+    // ── Fee ledger summary ────────────────────────────────────────────────────
+    let feeStats = null;
+    try {
+      feeStats = await get(`
+        SELECT
+          COUNT(*) as total_transactions,
+          SUM(CAST(gross_amount AS INTEGER)) as total_gross,
+          SUM(CAST(platform_fee AS INTEGER)) as total_platform_fee,
+          SUM(CAST(agent_payout AS INTEGER)) as total_agent_payout,
+          SUM(CASE WHEN settled = 1 THEN 1 ELSE 0 END) as settled_count
+        FROM fee_ledger
+      `, []);
+    } catch (_) {}
+
     res.json({
       agents: {
         total:    Number(agentTotals?.total    ?? 0),
@@ -88,6 +103,14 @@ router.get('/', async (req, res) => {
       },
       topCapabilities,
       recentActivity,
+      fees: {
+        totalTransactions: Number(feeStats?.total_transactions ?? 0),
+        platformFeeTotal:  String(feeStats?.total_platform_fee ?? '0'),
+        agentPayoutTotal:  String(feeStats?.total_agent_payout ?? '0'),
+        settledCount:      Number(feeStats?.settled_count ?? 0),
+        platformAddress:   PLATFORM_ADDRESS,
+        feeBps:            PLATFORM_FEE_BPS,
+      },
     });
   } catch (err) {
     console.error('[stats] Error:', err);

@@ -5,6 +5,7 @@ const { body, validationResult } = require('express-validator');
 const { query, run, get } = require('../db');
 const { checkSafeUrl } = require('../utils/ssrf');
 const { ADMIN_TOKEN } = require('../config/auth');
+const { apiKeyAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -174,6 +175,23 @@ router.get('/', async (req, res) => {
     res.json({ ok: true, agents, ...(capability && { filtered_by: capability }) });
   } catch (err) {
     console.error('[agents/list] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
+});
+
+// GET /api/agents/me — returns the calling agent's own info (auth required)
+router.get('/me', apiKeyAuth, async (req, res) => {
+  try {
+    const agent = await get('SELECT * FROM agents WHERE id = ?', [req.agentId]);
+    if (!agent) return res.status(404).json({ ok: false, error: 'Agent not found' });
+    const { api_key, ...safe } = agent;
+    safe.capabilities = JSON.parse(safe.capabilities || '[]');
+    safe.pricing = JSON.parse(safe.pricing || '{}');
+    safe.input_schema = JSON.parse(safe.input_schema || '{}');
+    safe.output_schema = JSON.parse(safe.output_schema || '{}');
+    res.json({ ok: true, agent: safe });
+  } catch (err) {
+    console.error('[agents/me] Error:', err);
     res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
   }
 });

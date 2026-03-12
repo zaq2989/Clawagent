@@ -15,6 +15,7 @@ const WORKER_NAME   = process.env.WORKER_NAME   || 'OllamaWorker-Local';
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || '15000', 10);
 
 let workerApiKey = process.env.CLAWAGENT_API_KEY || null;
+let myAgentId    = null;  // cached after first /api/agents/me call
 
 // ---------------------------------------------------------------------------
 // SSRF guard: only allow requests to the pre-configured CLAWAGENT_URL and
@@ -63,11 +64,11 @@ const CAPABILITY_HANDLERS = {
 const SUPPORTED_CAPABILITIES = Object.keys(CAPABILITY_HANDLERS);
 
 // ---------------------------------------------------------------------------
-// API helpers
+// API helpers — use Authorization: Bearer (required by apiKeyAuth middleware)
 // ---------------------------------------------------------------------------
 function apiHeaders() {
   const h = { 'Content-Type': 'application/json' };
-  if (workerApiKey) h['X-API-Key'] = workerApiKey;
+  if (workerApiKey) h['Authorization'] = `Bearer ${workerApiKey}`;
   return h;
 }
 
@@ -96,11 +97,24 @@ async function register() {
     throw new Error(`Registration failed: ${JSON.stringify(data)}`);
   }
   workerApiKey = data.agent?.api_key || data.api_key;
-  console.log(`[${WORKER_NAME}] Registered. agent_id=${data.agent?.id}`);
+  myAgentId    = data.agent?.id || null;
+  console.log(`[${WORKER_NAME}] Registered. agent_id=${myAgentId}`);
 }
 
 // ---------------------------------------------------------------------------
-// 2. Execute a prompt via Ollama
+// 2. Retrieve and cache this worker's own agent ID
+// ---------------------------------------------------------------------------
+async function getMyAgentId() {
+  if (myAgentId) return myAgentId;
+  const me = await apiFetch('/api/agents/me');
+  myAgentId = me.agent?.id || null;
+  if (!myAgentId) throw new Error('Could not determine own agent ID from /api/agents/me');
+  console.log(`[${WORKER_NAME}] My agent ID: ${myAgentId}`);
+  return myAgentId;
+}
+
+// ---------------------------------------------------------------------------
+// 3. Execute a prompt via Ollama
 // ---------------------------------------------------------------------------
 async function callOllama(prompt, systemPrompt = '') {
   const url = `${OLLAMA_URL}/api/generate`;
@@ -124,60 +138,78 @@ async function callOllama(prompt, systemPrompt = '') {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Poll /api/tasks for pending tasks and process them
+// 4. Poll /api/tasks for pending tasks assigned to this worker
 // ---------------------------------------------------------------------------
 async function pollAndProcess() {
+  let agentId;
+  try {
+    agentId = await getMyAgentId();
+  } catch (err) {
+    console.error(`[${WORKER_NAME}] Could not get agent ID:`, err.message);
+    return;
+  }
+
   let data;
   try {
+    // GET /api/tasks?status=pending — auth required; server returns only *our* tasks
     data = await apiFetch('/api/tasks?status=pending');
   } catch (err) {
     console.error(`[${WORKER_NAME}] Failed to fetch tasks:`, err.message);
     return;
   }
 
-  const tasks = data.tasks || data || [];
-  const pending = Array.isArray(tasks)
-    ? tasks.filter(t => t.status === 'pending' || t.status === 'open')
-    : [];
+  const tasks = data.tasks || [];
+  // Extra client-side guard: only handle tasks explicitly assigned to us
+  const pending = tasks.filter(t =>
+    (t.status === 'pending' || t.status === 'open') &&
+    (!t.worker_id || t.worker_id === agentId)
+  );
 
   if (pending.length === 0) {
     console.log(`[${WORKER_NAME}] No pending tasks.`);
     return;
   }
 
-  // Find first task whose capability we handle
-  const task = pending.find(t => CAPABILITY_HANDLERS[t.capability]) || pending[0];
-  const handler = CAPABILITY_HANDLERS[task.capability];
+  // The task's capability is stored in the `category` (and `intent`) column
+  const task = pending.find(t => CAPABILITY_HANDLERS[t.category]) || pending[0];
+  const capability = task.category || task.intent || '';
+  const handler = CAPABILITY_HANDLERS[capability];
 
   if (!handler) {
-    console.log(`[${WORKER_NAME}] No handler for capability: ${task.capability} – skipping.`);
+    console.log(`[${WORKER_NAME}] No handler for capability: ${capability} – skipping.`);
     return;
   }
 
-  console.log(`[${WORKER_NAME}] Processing task ${task.id} | capability: ${task.capability}`);
+  console.log(`[${WORKER_NAME}] Processing task ${task.id} | capability: ${capability}`);
 
   try {
-    // Build prompt from capability handler
-    const inputData = task.input || task.description || '';
-    const prompt = handler(typeof inputData === 'string' ? { text: inputData } : inputData);
+    // Parse input_data (stored as JSON string)
+    let inputData = {};
+    try {
+      inputData = typeof task.input_data === 'string' ? JSON.parse(task.input_data) : (task.input_data || {});
+    } catch (_) {
+      inputData = { text: task.input_data || task.description || '' };
+    }
+
+    const prompt = handler(inputData);
 
     // Run Ollama
     const output = await callOllama(prompt);
     console.log(`[${WORKER_NAME}] Ollama done. output[:80]: ${output.substring(0, 80)}...`);
 
-    // Submit result
-    const completeData = await apiFetch(`/api/tasks/${task.id}/complete`, {
-      method: 'POST',
-      body: JSON.stringify({ output, result: output }),
+    // Submit result via PATCH /api/tasks/:id/status
+    const completeData = await apiFetch(`/api/tasks/${task.id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed', result: { output } }),
     });
     console.log(`[${WORKER_NAME}] Task ${task.id} completed:`, JSON.stringify(completeData).substring(0, 120));
   } catch (err) {
     console.error(`[${WORKER_NAME}] Error processing task ${task.id}:`, err.message);
     // Attempt to mark task as failed
     try {
-      await apiFetch(`/api/tasks/${task.id}/fail`, {
-        method: 'POST',
-        body: JSON.stringify({ error: err.message }),
+      await apiFetch(`/api/tasks/${task.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'failed', result: { error: err.message } }),
       });
     } catch (_) {}
   }
@@ -197,6 +229,10 @@ async function main() {
     await register();
   } else {
     console.log(`[${WORKER_NAME}] Using provided API key.`);
+    // Pre-fetch our agent ID so polling can start cleanly
+    try { await getMyAgentId(); } catch (e) {
+      console.warn(`[${WORKER_NAME}] Could not pre-fetch agent ID: ${e.message}`);
+    }
   }
 
   // Initial poll

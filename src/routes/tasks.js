@@ -55,15 +55,22 @@ router.post('/create', apiKeyAuth, createTaskValidation, async (req, res) => {
   }
 });
 
-// GET /api/tasks (public)
-router.get('/', async (req, res) => {
+// GET /api/tasks — auth required; returns only tasks assigned to the calling agent
+router.get('/', apiKeyAuth, async (req, res) => {
   try {
-    const { status, category } = req.query;
-    let sql = 'SELECT * FROM tasks WHERE 1=1';
-    const params = [];
-    if (status) { sql += ' AND status = ?'; params.push(status); }
-    if (category) { sql += ' AND category = ?'; params.push(category); }
-    sql += ' ORDER BY created_at DESC';
+    const agentId = req.agentId;
+    const { status } = req.query;
+
+    let sql = 'SELECT * FROM tasks WHERE worker_id = ?';
+    const params = [agentId];
+
+    if (status) {
+      sql += ' AND status = ?';
+      params.push(status);
+    }
+
+    sql += ' ORDER BY created_at DESC LIMIT 50';
+
     const tasks = await query(sql, params);
     res.json({ ok: true, tasks });
   } catch (err) {
@@ -256,15 +263,19 @@ router.post('/run', apiKeyAuth, async (req, res) => {
 
     const best = pickBestAgent(matching);
 
-    // Save task as assigned
+    // polling mode: webhook_url is empty or 'internal://' — keep status as 'pending'
+    // so the worker can poll GET /api/tasks?status=pending
+    const isPollingMode = !best.webhook_url || best.webhook_url === '' || best.webhook_url.startsWith('internal://');
+    const taskStatus = isPollingMode ? 'pending' : 'assigned';
+
     await run(
       `INSERT INTO tasks (id, category, intent, input_data, worker_id, status, created_at, assigned_at)
-       VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?)`,
-      [taskId, capability, capability, JSON.stringify(input || {}), best.id, now, now]
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [taskId, capability, capability, JSON.stringify(input || {}), best.id, taskStatus, now, now]
     );
 
-    // Notify agent webhook (fire-and-forget)
-    if (best.webhook_url && !best.webhook_url.startsWith('internal://')) {
+    // Only notify via webhook when not in polling mode
+    if (!isPollingMode) {
       notifyWebhook(best.webhook_url, 'task_assigned', {
         task_id:    taskId,
         capability,
@@ -275,7 +286,7 @@ router.post('/run', apiKeyAuth, async (req, res) => {
 
     return res.json({
       taskId,
-      status:  'assigned',
+      status:  taskStatus,
       agentId: best.id,
       agentName: best.name,
       score: Math.round(scoreAgent(best) * 10000) / 10000,

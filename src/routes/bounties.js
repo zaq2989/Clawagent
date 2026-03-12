@@ -1,7 +1,7 @@
 const express = require('express');
 const uuidv4 = () => require('crypto').randomUUID();
 const { body, validationResult } = require('express-validator');
-const { getDb } = require('../db');
+const { query, run, get } = require('../db');
 const { apiKeyAuth } = require('../middleware/auth');
 
 const router = express.Router();
@@ -14,24 +14,34 @@ function safeAgent(agent) {
 }
 
 // GET /api/bounties — list open bounties (public)
-router.get('/', (req, res) => {
-  const db = getDb();
-  const { status } = req.query;
-  const filterStatus = status || 'open';
-  const bounties = db.prepare(
-    'SELECT id, title, description, required_skill, budget, status, posted_by, claimed_by, expires_at, created_at FROM bounties WHERE status = ? ORDER BY created_at DESC'
-  ).all(filterStatus);
-  res.json({ ok: true, bounties });
+router.get('/', async (req, res) => {
+  try {
+    const { status } = req.query;
+    const filterStatus = status || 'open';
+    const bounties = await query(
+      'SELECT id, title, description, required_skill, budget, status, posted_by, claimed_by, expires_at, created_at FROM bounties WHERE status = ? ORDER BY created_at DESC',
+      [filterStatus]
+    );
+    res.json({ ok: true, bounties });
+  } catch (err) {
+    console.error('[bounties/list] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
 });
 
 // GET /api/bounties/:id — bounty detail (public)
-router.get('/:id', (req, res) => {
-  const db = getDb();
-  const bounty = db.prepare(
-    'SELECT id, title, description, required_skill, budget, status, posted_by, claimed_by, result, expires_at, created_at FROM bounties WHERE id = ?'
-  ).get(req.params.id);
-  if (!bounty) return res.status(404).json({ ok: false, error: 'Bounty not found' });
-  res.json({ ok: true, bounty });
+router.get('/:id', async (req, res) => {
+  try {
+    const bounty = await get(
+      'SELECT id, title, description, required_skill, budget, status, posted_by, claimed_by, result, expires_at, created_at FROM bounties WHERE id = ?',
+      [req.params.id]
+    );
+    if (!bounty) return res.status(404).json({ ok: false, error: 'Bounty not found' });
+    res.json({ ok: true, bounty });
+  } catch (err) {
+    console.error('[bounties/:id] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
 });
 
 // POST /api/bounties — post a new bounty (auth required)
@@ -43,38 +53,46 @@ const postBountyValidation = [
   body('expires_at').optional().isInt({ min: 1 }).withMessage('expires_at must be a Unix timestamp in ms'),
 ];
 
-router.post('/', apiKeyAuth, postBountyValidation, (req, res) => {
+router.post('/', apiKeyAuth, postBountyValidation, async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
 
-  const db = getDb();
-  const { title, description, required_skill, budget, expires_at } = req.body;
-  const id = uuidv4();
-  const now = Date.now();
+  try {
+    const { title, description, required_skill, budget, expires_at } = req.body;
+    const id = uuidv4();
+    const now = Date.now();
 
-  db.prepare(
-    `INSERT INTO bounties (id, title, description, required_skill, budget, status, posted_by, expires_at, created_at)
-     VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?)`
-  ).run(id, title, description, required_skill, budget || 0, req.agentId, expires_at || null, now);
+    await run(
+      `INSERT INTO bounties (id, title, description, required_skill, budget, status, posted_by, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
+      [id, title, description, required_skill, budget || 0, req.agentId, expires_at || null, now]
+    );
 
-  res.status(201).json({
-    ok: true,
-    bounty: { id, title, description, required_skill, budget: budget || 0, status: 'open', posted_by: req.agentId, expires_at: expires_at || null, created_at: now }
-  });
+    res.status(201).json({
+      ok: true,
+      bounty: { id, title, description, required_skill, budget: budget || 0, status: 'open', posted_by: req.agentId, expires_at: expires_at || null, created_at: now }
+    });
+  } catch (err) {
+    console.error('[bounties/post] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
 });
 
 // POST /api/bounties/:id/claim — claim a bounty (auth required)
-router.post('/:id/claim', apiKeyAuth, (req, res) => {
-  const db = getDb();
-  const bounty = db.prepare('SELECT * FROM bounties WHERE id = ?').get(req.params.id);
+router.post('/:id/claim', apiKeyAuth, async (req, res) => {
+  try {
+    const bounty = await get('SELECT * FROM bounties WHERE id = ?', [req.params.id]);
 
-  if (!bounty) return res.status(404).json({ ok: false, error: 'Bounty not found' });
-  if (bounty.status !== 'open') return res.status(409).json({ ok: false, error: `Bounty is not open (current status: ${bounty.status})` });
+    if (!bounty) return res.status(404).json({ ok: false, error: 'Bounty not found' });
+    if (bounty.status !== 'open') return res.status(409).json({ ok: false, error: `Bounty is not open (current status: ${bounty.status})` });
 
-  db.prepare('UPDATE bounties SET status = ?, claimed_by = ? WHERE id = ?')
-    .run('claimed', req.agentId, req.params.id);
+    await run('UPDATE bounties SET status = ?, claimed_by = ? WHERE id = ?', ['claimed', req.agentId, req.params.id]);
 
-  res.json({ ok: true, bounty_id: req.params.id, status: 'claimed', claimed_by: req.agentId });
+    res.json({ ok: true, bounty_id: req.params.id, status: 'claimed', claimed_by: req.agentId });
+  } catch (err) {
+    console.error('[bounties/:id/claim] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
 });
 
 // POST /api/bounties/:id/complete — submit result (auth required, only claimer)
@@ -82,22 +100,25 @@ const completeValidation = [
   body('result').isString().trim().notEmpty().withMessage('result is required'),
 ];
 
-router.post('/:id/complete', apiKeyAuth, completeValidation, (req, res) => {
+router.post('/:id/complete', apiKeyAuth, completeValidation, async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
 
-  const db = getDb();
-  const bounty = db.prepare('SELECT * FROM bounties WHERE id = ?').get(req.params.id);
+  try {
+    const bounty = await get('SELECT * FROM bounties WHERE id = ?', [req.params.id]);
 
-  if (!bounty) return res.status(404).json({ ok: false, error: 'Bounty not found' });
-  if (bounty.status !== 'claimed') return res.status(409).json({ ok: false, error: `Bounty is not in claimed status (current: ${bounty.status})` });
-  if (bounty.claimed_by !== req.agentId) return res.status(403).json({ ok: false, error: 'Only the agent that claimed this bounty can complete it' });
+    if (!bounty) return res.status(404).json({ ok: false, error: 'Bounty not found' });
+    if (bounty.status !== 'claimed') return res.status(409).json({ ok: false, error: `Bounty is not in claimed status (current: ${bounty.status})` });
+    if (bounty.claimed_by !== req.agentId) return res.status(403).json({ ok: false, error: 'Only the agent that claimed this bounty can complete it' });
 
-  const { result } = req.body;
-  db.prepare('UPDATE bounties SET status = ?, result = ? WHERE id = ?')
-    .run('completed', result, req.params.id);
+    const { result } = req.body;
+    await run('UPDATE bounties SET status = ?, result = ? WHERE id = ?', ['completed', result, req.params.id]);
 
-  res.json({ ok: true, bounty_id: req.params.id, status: 'completed' });
+    res.json({ ok: true, bounty_id: req.params.id, status: 'completed' });
+  } catch (err) {
+    console.error('[bounties/:id/complete] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
 });
 
 module.exports = router;

@@ -1,7 +1,7 @@
 const express = require('express');
 const uuidv4 = () => require('crypto').randomUUID();
 const { body, validationResult } = require('express-validator');
-const { getDb } = require('../db');
+const { query, run, get } = require('../db');
 const { apiKeyAuth } = require('../middleware/auth');
 const { updateReputation } = require('./reputation');
 
@@ -21,68 +21,82 @@ const taskIdValidation = [
 ];
 
 // POST /api/escrow/lock
-router.post('/lock', lockValidation, (req, res) => {
+router.post('/lock', lockValidation, async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
 
-  const db = getDb();
-  const { task_id, amount, holder } = req.body;
+  try {
+    const { task_id, amount, holder } = req.body;
 
-  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(task_id);
-  if (!task) return res.status(404).json({ ok: false, error: 'Task not found' });
+    const task = await get('SELECT * FROM tasks WHERE id = ?', [task_id]);
+    if (!task) return res.status(404).json({ ok: false, error: 'Task not found' });
 
-  const id = uuidv4();
-  db.prepare(`INSERT INTO escrow (id, task_id, amount, holder, status, created_at) VALUES (?, ?, ?, ?, 'locked', ?)`)
-    .run(id, task_id, amount, holder || 'issuer', Date.now());
+    const id = uuidv4();
+    await run(
+      `INSERT INTO escrow (id, task_id, amount, holder, status, created_at) VALUES (?, ?, ?, ?, 'locked', ?)`,
+      [id, task_id, amount, holder || 'issuer', Date.now()]
+    );
 
-  db.prepare('UPDATE tasks SET payment_locked = 1 WHERE id = ?').run(task_id);
+    await run('UPDATE tasks SET payment_locked = 1 WHERE id = ?', [task_id]);
 
-  res.json({ ok: true, escrow: { id, task_id, amount, status: 'locked' } });
+    res.json({ ok: true, escrow: { id, task_id, amount, status: 'locked' } });
+  } catch (err) {
+    console.error('[escrow/lock] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
 });
 
 // POST /api/escrow/release
-router.post('/release', taskIdValidation, (req, res) => {
+router.post('/release', taskIdValidation, async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
 
-  const db = getDb();
-  const { task_id } = req.body;
+  try {
+    const { task_id } = req.body;
 
-  const escrowRow = db.prepare("SELECT * FROM escrow WHERE task_id = ? AND status = 'locked'").get(task_id);
-  if (!escrowRow) return res.status(404).json({ ok: false, error: 'No locked escrow for this task' });
+    const escrowRow = await get("SELECT * FROM escrow WHERE task_id = ? AND status = 'locked'", [task_id]);
+    if (!escrowRow) return res.status(404).json({ ok: false, error: 'No locked escrow for this task' });
 
-  db.prepare("UPDATE escrow SET status = 'released' WHERE id = ?").run(escrowRow.id);
-  db.prepare('UPDATE tasks SET payment_locked = 0 WHERE id = ?').run(task_id);
+    await run("UPDATE escrow SET status = 'released' WHERE id = ?", [escrowRow.id]);
+    await run('UPDATE tasks SET payment_locked = 0 WHERE id = ?', [task_id]);
 
-  // Auto-update worker reputation on escrow release
-  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(task_id);
-  let reputation = null;
-  if (task && task.worker_id) {
-    reputation = updateReputation(task.worker_id, task_id, 'completed', {});
+    // Auto-update worker reputation on escrow release
+    const task = await get('SELECT * FROM tasks WHERE id = ?', [task_id]);
+    let reputation = null;
+    if (task && task.worker_id) {
+      reputation = await updateReputation(task.worker_id, task_id, 'completed', {});
+    }
+
+    res.json({ ok: true, escrow: { id: escrowRow.id, task_id, status: 'released', amount: escrowRow.amount }, reputation });
+  } catch (err) {
+    console.error('[escrow/release] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
   }
-
-  res.json({ ok: true, escrow: { id: escrowRow.id, task_id, status: 'released', amount: escrowRow.amount }, reputation });
 });
 
 // POST /api/escrow/slash
-router.post('/slash', taskIdValidation, (req, res) => {
+router.post('/slash', taskIdValidation, async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
 
-  const db = getDb();
-  const { task_id } = req.body;
+  try {
+    const { task_id } = req.body;
 
-  const escrowRow = db.prepare("SELECT * FROM escrow WHERE task_id = ? AND status = 'locked'").get(task_id);
-  if (!escrowRow) return res.status(404).json({ ok: false, error: 'No locked escrow for this task' });
+    const escrowRow = await get("SELECT * FROM escrow WHERE task_id = ? AND status = 'locked'", [task_id]);
+    if (!escrowRow) return res.status(404).json({ ok: false, error: 'No locked escrow for this task' });
 
-  db.prepare("UPDATE escrow SET status = 'slashed' WHERE id = ?").run(escrowRow.id);
+    await run("UPDATE escrow SET status = 'slashed' WHERE id = ?", [escrowRow.id]);
 
-  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(task_id);
-  if (task && task.worker_id) {
-    db.prepare('UPDATE agents SET bond_locked = bond_locked + ? WHERE id = ?').run(escrowRow.amount, task.worker_id);
+    const task = await get('SELECT * FROM tasks WHERE id = ?', [task_id]);
+    if (task && task.worker_id) {
+      await run('UPDATE agents SET bond_locked = bond_locked + ? WHERE id = ?', [escrowRow.amount, task.worker_id]);
+    }
+
+    res.json({ ok: true, escrow: { id: escrowRow.id, task_id, status: 'slashed', amount: escrowRow.amount } });
+  } catch (err) {
+    console.error('[escrow/slash] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
   }
-
-  res.json({ ok: true, escrow: { id: escrowRow.id, task_id, status: 'slashed', amount: escrowRow.amount } });
 });
 
 module.exports = router;

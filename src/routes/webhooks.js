@@ -7,7 +7,7 @@
 
 const express = require('express');
 const { body, validationResult } = require('express-validator');
-const { getDb } = require('../db');
+const { query, run, get } = require('../db');
 const { sendWebhook } = require('../webhook');
 const { apiKeyAuth } = require('../middleware/auth');
 const { checkSafeUrl } = require('../utils/ssrf');
@@ -21,31 +21,30 @@ router.post('/test', apiKeyAuth, [
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
 
-  const db = getDb();
-  const agent = db.prepare('SELECT id, name, webhook_url FROM agents WHERE id = ?').get(req.agentId);
-  if (!agent) return res.status(404).json({ ok: false, error: 'Agent not found' });
-
-  // Use body-provided URL or fall back to agent's registered webhook_url
-  const targetUrl = req.body.webhook_url || agent.webhook_url;
-  if (!targetUrl) {
-    return res.status(400).json({ ok: false, error: 'No webhook_url configured. Provide one in the request body or register your agent with a webhook_url.' });
-  }
-
-  // SSRF guard: validate the target URL before sending
-  const ssrfCheck = checkSafeUrl(targetUrl);
-  if (!ssrfCheck.safe) {
-    return res.status(400).json({ ok: false, error: `webhook_url rejected: ${ssrfCheck.reason}` });
-  }
-
-  const payload = {
-    event: 'test',
-    timestamp: new Date().toISOString(),
-    agent_id: agent.id,
-    agent_name: agent.name,
-    message: 'ClawAgent webhook test — connection successful!',
-  };
-
   try {
+    const agent = await get('SELECT id, name, webhook_url FROM agents WHERE id = ?', [req.agentId]);
+    if (!agent) return res.status(404).json({ ok: false, error: 'Agent not found' });
+
+    // Use body-provided URL or fall back to agent's registered webhook_url
+    const targetUrl = req.body.webhook_url || agent.webhook_url;
+    if (!targetUrl) {
+      return res.status(400).json({ ok: false, error: 'No webhook_url configured. Provide one in the request body or register your agent with a webhook_url.' });
+    }
+
+    // SSRF guard: validate the target URL before sending
+    const ssrfCheck = checkSafeUrl(targetUrl);
+    if (!ssrfCheck.safe) {
+      return res.status(400).json({ ok: false, error: `webhook_url rejected: ${ssrfCheck.reason}` });
+    }
+
+    const payload = {
+      event: 'test',
+      timestamp: new Date().toISOString(),
+      agent_id: agent.id,
+      agent_name: agent.name,
+      message: 'ClawAgent webhook test — connection successful!',
+    };
+
     const result = await sendWebhook(targetUrl, payload);
     if (result.ok) {
       return res.json({ ok: true, status: result.status, attempts: result.attempts, webhook_url: targetUrl });

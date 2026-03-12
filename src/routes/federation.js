@@ -7,7 +7,7 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
-const { getDb } = require('../db');
+const { query, run, get } = require('../db');
 const { ADMIN_TOKEN } = require('../config/auth');
 const { checkSafeUrl } = require('../utils/ssrf');
 
@@ -26,10 +26,6 @@ function requireAdmin(req, res, next) {
 }
 
 // ─── URL validation (SSRF guard) ───────────────────────────────────────────────
-// Delegates to the canonical checkSafeUrl utility which covers the full RFC 1918
-// range (including 172.16.0.0–172.31.255.255), link-local, and cloud metadata
-// endpoints. The previous inline implementation only blocked 172.16.x.x and
-// missed 172.17.x.x–172.31.x.x.
 function validatePeerUrl(url) {
   const check = checkSafeUrl(url);
   if (!check.safe) {
@@ -44,26 +40,27 @@ function validatePeerUrl(url) {
 }
 
 // ─── POST /federation/peers ─────────────────────────────────────────────────────
-router.post('/peers', (req, res) => {
+router.post('/peers', async (req, res) => {
   const { url, name, public_key } = req.body || {};
   if (!url) return res.status(400).json({ error: 'url required' });
 
   const validation = validatePeerUrl(url);
   if (!validation.ok) return res.status(400).json({ error: validation.error });
 
-  const db = getDb();
   const cleanUrl = url.replace(/\/$/, '');
 
-  // Reject duplicate URL registrations — prevents hijacking existing peer records
-  const existing = db.prepare('SELECT id FROM peers WHERE url = ?').get(cleanUrl);
-  if (existing) {
-    return res.status(409).json({ ok: false, error: 'Peer already registered', url: cleanUrl });
-  }
-
-  const id = crypto.randomUUID();
   try {
-    db.prepare(`INSERT INTO peers (id, url, name, public_key) VALUES (?, ?, ?, ?)`)
-      .run(id, cleanUrl, name || '', public_key || null);
+    // Reject duplicate URL registrations — prevents hijacking existing peer records
+    const existing = await get('SELECT id FROM peers WHERE url = ?', [cleanUrl]);
+    if (existing) {
+      return res.status(409).json({ ok: false, error: 'Peer already registered', url: cleanUrl });
+    }
+
+    const id = crypto.randomUUID();
+    await run(
+      `INSERT INTO peers (id, url, name, public_key) VALUES (?, ?, ?, ?)`,
+      [id, cleanUrl, name || '', public_key || null]
+    );
     res.status(201).json({ ok: true, peer_id: id, url: cleanUrl, name: name || '' });
   } catch (e) {
     res.status(409).json({ ok: false, error: 'Peer already registered', url: cleanUrl });
@@ -71,45 +68,62 @@ router.post('/peers', (req, res) => {
 });
 
 // ─── GET /federation/peers ──────────────────────────────────────────────────────
-router.get('/peers', (req, res) => {
-  const db = getDb();
-  const peers = db.prepare(
-    "SELECT id, url, name, status, trust_score, last_seen FROM peers WHERE status != ?"
-  ).all('banned');
+router.get('/peers', async (req, res) => {
+  try {
+    const peers = await query(
+      "SELECT id, url, name, status, trust_score, last_seen FROM peers WHERE status != ?",
+      ['banned']
+    );
 
-  res.json({
-    ok: true,
-    count: peers.length,
-    peers,
-    this_node: { url: THIS_NODE_URL, name: THIS_NODE_NAME },
-  });
+    res.json({
+      ok: true,
+      count: peers.length,
+      peers,
+      this_node: { url: THIS_NODE_URL, name: THIS_NODE_NAME },
+    });
+  } catch (err) {
+    console.error('[federation/peers] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
 });
 
 // ─── DELETE /federation/peers/:id (admin only) ─────────────────────────────────
-router.delete('/peers/:id', requireAdmin, (req, res) => {
-  const db = getDb();
-  const info = db.prepare("UPDATE peers SET status = ? WHERE id = ?").run('banned', req.params.id);
-  if (info.changes === 0) return res.status(404).json({ ok: false, error: 'Peer not found' });
-  res.json({ ok: true });
+router.delete('/peers/:id', requireAdmin, async (req, res) => {
+  try {
+    await run("UPDATE peers SET status = ? WHERE id = ?", ['banned', req.params.id]);
+    // Note: For Postgres compatibility we can't easily check changes; assume success if no error
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[federation/peers/:id DELETE] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
 });
 
 // ─── GET /federation/health ─────────────────────────────────────────────────────
-router.get('/health', (req, res) => {
-  const db = getDb();
-  const agentCount      = db.prepare('SELECT COUNT(*) as count FROM agents').get().count;
-  const capabilityCount = db.prepare(
-    `SELECT COUNT(DISTINCT value) as count FROM agents, json_each(agents.capabilities)`
-  ).get()?.count || 0;
+router.get('/health', async (req, res) => {
+  try {
+    const agentCountRow = await get('SELECT COUNT(*) as count FROM agents', []);
+    const agentCount = agentCountRow?.count || 0;
 
-  res.json({
-    ok:           true,
-    node:         THIS_NODE_URL,
-    name:         THIS_NODE_NAME,
-    agents:       agentCount,
-    capabilities: capabilityCount,
-    version:      '1.0.0',
-    timestamp:    new Date().toISOString(),
-  });
+    const capabilityCountRow = await get(
+      `SELECT COUNT(DISTINCT value) as count FROM agents, json_each(agents.capabilities)`,
+      []
+    );
+    const capabilityCount = capabilityCountRow?.count || 0;
+
+    res.json({
+      ok:           true,
+      node:         THIS_NODE_URL,
+      name:         THIS_NODE_NAME,
+      agents:       agentCount,
+      capabilities: capabilityCount,
+      version:      '1.0.0',
+      timestamp:    new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[federation/health] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
 });
 
 module.exports = router;

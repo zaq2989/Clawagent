@@ -2,7 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const uuidv4 = () => require('crypto').randomUUID();
 const { body, validationResult } = require('express-validator');
-const { getDb } = require('../db');
+const { query, run, get } = require('../db');
 const { checkSafeUrl } = require('../utils/ssrf');
 const { ADMIN_TOKEN } = require('../config/auth');
 
@@ -34,16 +34,13 @@ const registerValidation = [
   body('bond_amount').optional().isFloat({ min: 0 }).withMessage('bond_amount must be a non-negative number'),
   body('webhook_url').optional().custom((value) => {
     if (!value) return true;
-    // Basic URL format check
     try { new URL(value); } catch { throw new Error('webhook_url must be a valid URL'); }
-    // SSRF protection: block internal/private addresses
     const { safe, reason } = checkSafeUrl(value);
     if (!safe) throw new Error(`webhook_url rejected: ${reason}`);
     return true;
   }),
   body('endpoint').optional().custom((value) => {
     if (!value) return true;
-    // Accept 'endpoint' as alias for 'webhook_url'
     try { new URL(value); } catch { throw new Error('endpoint must be a valid URL'); }
     const { safe, reason } = checkSafeUrl(value);
     if (!safe) throw new Error(`endpoint rejected: ${reason}`);
@@ -60,70 +57,74 @@ async function handleRegister(req, res) {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ ok: false, errors: errors.array() });
 
-  const db = getDb();
-  const { name, type, capabilities, bond_amount, pricing, input_schema, output_schema, description, signature, nonce, capability_version } = req.body;
-  // Accept 'endpoint' as alias for 'webhook_url'
-  const webhook_url = req.body.webhook_url || req.body.endpoint || null;
+  try {
+    const { name, type, capabilities, bond_amount, pricing, input_schema, output_schema, description, signature, nonce, capability_version } = req.body;
+    // Accept 'endpoint' as alias for 'webhook_url'
+    const webhook_url = req.body.webhook_url || req.body.endpoint || null;
 
-  // --- Verifiable Agent Identity: signature verification ---
-  let owner_address = null;
-  let verified = 0;
+    // --- Verifiable Agent Identity: signature verification ---
+    let owner_address = null;
+    let verified = 0;
 
-  if (signature && nonce) {
-    // Validate nonce exists and is not expired (5 min)
-    const challengeData = challengeStore.get(nonce);
-    if (!challengeData || Date.now() - challengeData.createdAt > 5 * 60 * 1000) {
-      return res.status(400).json({ ok: false, error: 'Invalid or expired nonce. Call GET /api/agents/challenge first.' });
+    if (signature && nonce) {
+      const challengeData = challengeStore.get(nonce);
+      if (!challengeData || Date.now() - challengeData.createdAt > 5 * 60 * 1000) {
+        return res.status(400).json({ ok: false, error: 'Invalid or expired nonce. Call GET /api/agents/challenge first.' });
+      }
+      try {
+        const { ethers } = require('ethers');
+        const message = `Register Claw Network agent: ${nonce}`;
+        const recoveredAddress = ethers.verifyMessage(message, signature);
+        owner_address = recoveredAddress;
+        verified = 1;
+        challengeStore.delete(nonce);
+      } catch (e) {
+        owner_address = null;
+        verified = 0;
+      }
     }
-    try {
-      const { ethers } = require('ethers');
-      const message = `Register Claw Network agent: ${nonce}`;
-      const recoveredAddress = ethers.verifyMessage(message, signature);
-      owner_address = recoveredAddress;
-      verified = 1;
-      challengeStore.delete(nonce); // consume nonce (replay prevention)
-    } catch (e) {
-      // Bad signature — proceed as unverified (don't block registration)
-      owner_address = null;
-      verified = 0;
-    }
-  }
 
-  // --- Parse capabilities, stripping @version for storage but recording capability_version ---
-  const rawCapabilities = capabilities || [];
-  const parsedCapabilities = rawCapabilities.map(c => c.split('@')[0]);
-  // capability_version: use explicit field, or derive from first versioned capability
-  let capVersion = capability_version || 'v1';
-  if (!capability_version) {
-    for (const c of rawCapabilities) {
-      const parts = c.split('@');
-      if (parts.length > 1 && parts[1]) { capVersion = parts[1]; break; }
+    // --- Parse capabilities, stripping @version for storage ---
+    const rawCapabilities = capabilities || [];
+    const parsedCapabilities = rawCapabilities.map(c => c.split('@')[0]);
+    let capVersion = capability_version || 'v1';
+    if (!capability_version) {
+      for (const c of rawCapabilities) {
+        const parts = c.split('@');
+        if (parts.length > 1 && parts[1]) { capVersion = parts[1]; break; }
+      }
     }
-  }
 
-  const id = uuidv4();
-  const apiKey = uuidv4();
-  const hashedKey = crypto.createHash('sha256').update(apiKey).digest('hex');
-  const now = Date.now();
-  db.prepare(`INSERT INTO agents (id, name, type, capabilities, api_key, bond_amount, webhook_url, pricing, input_schema, output_schema, description, owner_address, verified, capability_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(
-      id, name, type || 'ai',
-      JSON.stringify(parsedCapabilities),
-      hashedKey,
-      bond_amount || 0,
-      webhook_url || null,
-      JSON.stringify(pricing || {}),
-      JSON.stringify(input_schema || {}),
-      JSON.stringify(output_schema || {}),
-      description || '',
-      owner_address,
-      verified,
-      capVersion,
-      now
+    const id = uuidv4();
+    const apiKey = uuidv4();
+    const hashedKey = crypto.createHash('sha256').update(apiKey).digest('hex');
+    const now = Date.now();
+
+    await run(
+      `INSERT INTO agents (id, name, type, capabilities, api_key, bond_amount, webhook_url, pricing, input_schema, output_schema, description, owner_address, verified, capability_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id, name, type || 'ai',
+        JSON.stringify(parsedCapabilities),
+        hashedKey,
+        bond_amount || 0,
+        webhook_url || null,
+        JSON.stringify(pricing || {}),
+        JSON.stringify(input_schema || {}),
+        JSON.stringify(output_schema || {}),
+        description || '',
+        owner_address,
+        verified,
+        capVersion,
+        now,
+      ]
     );
 
-  // Return plaintext key only once; it cannot be retrieved again
-  res.json({ ok: true, agent: { id, name, api_key: apiKey, verified: verified === 1, owner_address, status: 'active', created_at: now } });
+    // Return plaintext key only once; it cannot be retrieved again
+    res.json({ ok: true, agent: { id, name, api_key: apiKey, verified: verified === 1, owner_address, status: 'active', created_at: now } });
+  } catch (err) {
+    console.error('[agents/register] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
 }
 
 // POST /api/agents — convenience alias (Claw Network SDK compatibility)
@@ -133,80 +134,88 @@ router.post('/', registerValidation, handleRegister);
 router.post('/register', registerValidation, handleRegister);
 
 // GET /api/agents — public, no auth required; never exposes api_key or other private fields
-// Optional query param: ?capability=<name> to filter by capability
-router.get('/', (req, res) => {
-  const db = getDb();
-  const { capability } = req.query;
-  const rows = db.prepare(
-    'SELECT id, name, type, capabilities, pricing, input_schema, output_schema, description, reputation_score, success_rate, latency_ms, call_count, bond_amount, tasks_completed, tasks_failed, status, owner_address, verified, capability_version, created_at FROM agents ORDER BY reputation_score DESC'
-  ).all();
-  const agents = rows
-    .filter(a => {
-      if (a.type === 'guest') return false; // hide guest keys from marketplace
-      if (!capability) return true;
-      let caps = [];
-      try { caps = JSON.parse(a.capabilities || '[]'); } catch (_) {}
-      return Array.isArray(caps) && caps.includes(capability);
-    })
-    .map(a => ({
-    id: a.id,
-    name: a.name,
-    type: a.type,
-    capabilities:    JSON.parse(a.capabilities  || '[]'),
-    pricing:         JSON.parse(a.pricing        || '{}'),
-    input_schema:    JSON.parse(a.input_schema   || '{}'),
-    output_schema:   JSON.parse(a.output_schema  || '{}'),
-    description:     a.description || '',
-    reputation_score: a.reputation_score,
-    success_rate:    a.success_rate,
-    latency_ms:      a.latency_ms,
-    call_count:      a.call_count,
-    bond_amount:     a.bond_amount,
-    tasks_completed: a.tasks_completed,
-    tasks_failed:    a.tasks_failed,
-    status:          a.status,
-    verified:        a.verified === 1,
-    owner_address:   a.owner_address || null,
-    capability_version: a.capability_version || 'v1',
-    created_at:      a.created_at,
-  }));
-  res.json({ ok: true, agents, ...(capability && { filtered_by: capability }) });
+router.get('/', async (req, res) => {
+  try {
+    const { capability } = req.query;
+    const rows = await query(
+      'SELECT id, name, type, capabilities, pricing, input_schema, output_schema, description, reputation_score, success_rate, latency_ms, call_count, bond_amount, tasks_completed, tasks_failed, status, owner_address, verified, capability_version, created_at FROM agents ORDER BY reputation_score DESC',
+      []
+    );
+    const agents = rows
+      .filter(a => {
+        if (a.type === 'guest') return false;
+        if (!capability) return true;
+        let caps = [];
+        try { caps = JSON.parse(a.capabilities || '[]'); } catch (_) {}
+        return Array.isArray(caps) && caps.includes(capability);
+      })
+      .map(a => ({
+        id: a.id,
+        name: a.name,
+        type: a.type,
+        capabilities:    JSON.parse(a.capabilities  || '[]'),
+        pricing:         JSON.parse(a.pricing        || '{}'),
+        input_schema:    JSON.parse(a.input_schema   || '{}'),
+        output_schema:   JSON.parse(a.output_schema  || '{}'),
+        description:     a.description || '',
+        reputation_score: a.reputation_score,
+        success_rate:    a.success_rate,
+        latency_ms:      a.latency_ms,
+        call_count:      a.call_count,
+        bond_amount:     a.bond_amount,
+        tasks_completed: a.tasks_completed,
+        tasks_failed:    a.tasks_failed,
+        status:          a.status,
+        verified:        a.verified === 1,
+        owner_address:   a.owner_address || null,
+        capability_version: a.capability_version || 'v1',
+        created_at:      a.created_at,
+      }));
+    res.json({ ok: true, agents, ...(capability && { filtered_by: capability }) });
+  } catch (err) {
+    console.error('[agents/list] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
 });
 
 // GET /api/agents/:id
-router.get('/:id', (req, res) => {
-  const db = getDb();
-  const agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(req.params.id);
-  if (!agent) return res.status(404).json({ ok: false, error: 'Agent not found' });
+router.get('/:id', async (req, res) => {
+  try {
+    const agent = await get('SELECT * FROM agents WHERE id = ?', [req.params.id]);
+    if (!agent) return res.status(404).json({ ok: false, error: 'Agent not found' });
 
-  const totalTasks = agent.tasks_completed + agent.tasks_failed;
-  const successRate = totalTasks > 0 ? agent.tasks_completed / totalTasks : (agent.success_rate || 1.0);
-  const reputation = {
-    score:           agent.reputation_score,
-    success_rate:    successRate,
-    latency_ms:      agent.latency_ms,
-    call_count:      agent.call_count,
-    tasks_completed: agent.tasks_completed,
-    tasks_failed:    agent.tasks_failed,
-  };
+    const totalTasks = agent.tasks_completed + agent.tasks_failed;
+    const successRate = totalTasks > 0 ? agent.tasks_completed / totalTasks : (agent.success_rate || 1.0);
+    const reputation = {
+      score:           agent.reputation_score,
+      success_rate:    successRate,
+      latency_ms:      agent.latency_ms,
+      call_count:      agent.call_count,
+      tasks_completed: agent.tasks_completed,
+      tasks_failed:    agent.tasks_failed,
+    };
 
-  const { api_key, ...safeAgent } = agent;
-  res.json({
-    ok: true,
-    agent: {
-      ...safeAgent,
-      capabilities:  JSON.parse(agent.capabilities  || '[]'),
-      pricing:       JSON.parse(agent.pricing        || '{}'),
-      input_schema:  JSON.parse(agent.input_schema   || '{}'),
-      output_schema: JSON.parse(agent.output_schema  || '{}'),
-      reputation,
-    }
-  });
+    const { api_key, ...safeAgent } = agent;
+    res.json({
+      ok: true,
+      agent: {
+        ...safeAgent,
+        capabilities:  JSON.parse(agent.capabilities  || '[]'),
+        pricing:       JSON.parse(agent.pricing        || '{}'),
+        input_schema:  JSON.parse(agent.input_schema   || '{}'),
+        output_schema: JSON.parse(agent.output_schema  || '{}'),
+        reputation,
+      }
+    });
+  } catch (err) {
+    console.error('[agents/:id] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
 });
 
 // POST /api/agents/:id/reputation — Claw Network reputation update
-router.post('/:id/reputation', (req, res) => {
-  // Admin token check — uses module-level ADMIN_TOKEN (env var required)
+router.post('/:id/reputation', async (req, res) => {
+  // Admin token check
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   if (token !== ADMIN_TOKEN) {
@@ -218,36 +227,38 @@ router.post('/:id/reputation', (req, res) => {
     return res.status(400).json({ ok: false, error: '`success` (boolean) is required' });
   }
 
-  const db = getDb();
-  const agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(req.params.id);
-  if (!agent) return res.status(404).json({ ok: false, error: 'Agent not found' });
+  try {
+    const agent = await get('SELECT * FROM agents WHERE id = ?', [req.params.id]);
+    if (!agent) return res.status(404).json({ ok: false, error: 'Agent not found' });
 
-  const prevCount   = agent.call_count   || 0;
-  const prevSR      = agent.success_rate || 1.0;
-  const prevLatency = agent.latency_ms   || 1000;
-  const newLatency  = (typeof latency_ms === 'number' && latency_ms > 0) ? latency_ms : prevLatency;
+    const prevCount   = agent.call_count   || 0;
+    const prevSR      = agent.success_rate || 1.0;
+    const prevLatency = agent.latency_ms   || 1000;
+    const newLatency  = (typeof latency_ms === 'number' && latency_ms > 0) ? latency_ms : prevLatency;
 
-  const newCount = prevCount + 1;
-  // Rolling average success_rate
-  const newSR = (prevSR * prevCount + (success ? 1 : 0)) / newCount;
-  // EMA latency: 0.8 * old + 0.2 * new
-  const emaLatency = Math.round(prevLatency * 0.8 + newLatency * 0.2);
-  // Reputation score (clamped 0-100)
-  const rawScore = newSR * 70 + (1 - Math.min(emaLatency, 5000) / 5000) * 30;
-  const newScore = Math.min(100, Math.max(0, Math.round(rawScore * 100) / 100));
+    const newCount = prevCount + 1;
+    const newSR = (prevSR * prevCount + (success ? 1 : 0)) / newCount;
+    const emaLatency = Math.round(prevLatency * 0.8 + newLatency * 0.2);
+    const rawScore = newSR * 70 + (1 - Math.min(emaLatency, 5000) / 5000) * 30;
+    const newScore = Math.min(100, Math.max(0, Math.round(rawScore * 100) / 100));
 
-  db.prepare(
-    'UPDATE agents SET call_count = ?, success_rate = ?, latency_ms = ?, reputation_score = ? WHERE id = ?'
-  ).run(newCount, newSR, emaLatency, newScore, req.params.id);
+    await run(
+      'UPDATE agents SET call_count = ?, success_rate = ?, latency_ms = ?, reputation_score = ? WHERE id = ?',
+      [newCount, newSR, emaLatency, newScore, req.params.id]
+    );
 
-  res.json({
-    ok: true,
-    agent_id:        req.params.id,
-    call_count:      newCount,
-    success_rate:    newSR,
-    latency_ms:      emaLatency,
-    reputation_score: newScore,
-  });
+    res.json({
+      ok: true,
+      agent_id:        req.params.id,
+      call_count:      newCount,
+      success_rate:    newSR,
+      latency_ms:      emaLatency,
+      reputation_score: newScore,
+    });
+  } catch (err) {
+    console.error('[agents/:id/reputation] Error:', err);
+    res.status(500).json({ ok: false, error: 'Internal server error', detail: err.message });
+  }
 });
 
 module.exports = router;

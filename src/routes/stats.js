@@ -1,6 +1,6 @@
 // src/routes/stats.js — Monitoring Dashboard: GET /api/stats
 const express = require('express');
-const { getDb } = require('../db');
+const { query, run, get } = require('../db');
 
 const router = express.Router();
 
@@ -8,33 +8,29 @@ const router = express.Router();
  * GET /api/stats
  * Returns aggregated metrics for the Claw Network dashboard.
  */
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
-    const db = getDb();
-
     // ── Agents summary ────────────────────────────────────────────────────────
-    const agentTotals = db.prepare(`
+    const agentTotals = await get(`
       SELECT
         COUNT(*) AS total,
         SUM(CASE WHEN status = 'active'   THEN 1 ELSE 0 END) AS active,
         SUM(CASE WHEN status != 'active'  THEN 1 ELSE 0 END) AS inactive
       FROM agents
-    `).get();
+    `, []);
 
     // ── Tasks summary ─────────────────────────────────────────────────────────
-    const taskTotals = db.prepare(`
+    const taskTotals = await get(`
       SELECT
         COUNT(*) AS total,
         SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
         SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END) AS failed,
         SUM(CASE WHEN status IN ('open','assigned','in_progress') THEN 1 ELSE 0 END) AS pending
       FROM tasks
-    `).get();
+    `, []);
 
     // ── Top 5 capabilities (by task category) ─────────────────────────────────
-    // avgLatencyMs: avg(completed_at - assigned_at) for completed tasks
-    // successRate: completed / total for that category
-    const topCapabilities = db.prepare(`
+    const topCapabilities = (await query(`
       SELECT
         category AS capability,
         COUNT(*) AS count,
@@ -54,7 +50,7 @@ router.get('/', (req, res) => {
       GROUP BY category
       ORDER BY count DESC
       LIMIT 5
-    `).all().map(row => ({
+    `, [])).map(row => ({
       capability:   row.capability,
       count:        row.count,
       avgLatencyMs: row.avgLatencyMs !== null ? Number(row.avgLatencyMs) : null,
@@ -62,7 +58,7 @@ router.get('/', (req, res) => {
     }));
 
     // ── Recent 10 task activity ───────────────────────────────────────────────
-    const recentActivity = db.prepare(`
+    const recentActivity = (await query(`
       SELECT
         id        AS taskId,
         category  AS capability,
@@ -71,7 +67,7 @@ router.get('/', (req, res) => {
       FROM tasks
       ORDER BY created_at DESC
       LIMIT 10
-    `).all().map(row => ({
+    `, [])).map(row => ({
       taskId:     row.taskId,
       capability: row.capability,
       status:     row.status,
@@ -80,15 +76,15 @@ router.get('/', (req, res) => {
 
     res.json({
       agents: {
-        total:    Number(agentTotals.total    ?? 0),
-        active:   Number(agentTotals.active   ?? 0),
-        inactive: Number(agentTotals.inactive ?? 0),
+        total:    Number(agentTotals?.total    ?? 0),
+        active:   Number(agentTotals?.active   ?? 0),
+        inactive: Number(agentTotals?.inactive ?? 0),
       },
       tasks: {
-        total:     Number(taskTotals.total     ?? 0),
-        completed: Number(taskTotals.completed ?? 0),
-        failed:    Number(taskTotals.failed    ?? 0),
-        pending:   Number(taskTotals.pending   ?? 0),
+        total:     Number(taskTotals?.total     ?? 0),
+        completed: Number(taskTotals?.completed ?? 0),
+        failed:    Number(taskTotals?.failed    ?? 0),
+        pending:   Number(taskTotals?.pending   ?? 0),
       },
       topCapabilities,
       recentActivity,

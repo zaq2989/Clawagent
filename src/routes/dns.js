@@ -4,7 +4,7 @@
 // POST /call
 
 const express = require('express');
-const { getDb } = require('../db');
+const { query, run, get } = require('../db');
 const { BUILTINS } = require('../builtins');
 const { checkSafeUrl } = require('../utils/ssrf');
 const { ADMIN_TOKEN } = require('../config/auth');
@@ -36,8 +36,6 @@ const SHORT_NAMES = {
 
 /**
  * Parse a raw capability string, splitting off an optional @version suffix.
- * e.g. "translate.text.en-ja@v2" → { name: "translate.text.en-ja", version: "v2" }
- *      "translate.text.en-ja"    → { name: "translate.text.en-ja", version: null }
  */
 function parseCapability(raw) {
   const atIdx = raw.lastIndexOf('@');
@@ -49,7 +47,6 @@ function parseCapability(raw) {
 
 /**
  * Resolve a capability name, expanding short names to canonical form.
- * Returns { canonical, resolvedFrom, version } — resolvedFrom is set only if expansion happened.
  */
 function resolveCapabilityName(raw) {
   const { name, version } = parseCapability(raw);
@@ -61,9 +58,6 @@ function resolveCapabilityName(raw) {
 
 /**
  * Score an agent provider for ranking.
- * score = reputation_score * 0.35 + success_rate * 100 * 0.35
- *         - price_per_call * 1000 * 0.1 - latency_ms / 100 * 0.1
- *         + verified ? 10 : 0
  */
 function calcScore(agent, pricing) {
   const rep      = agent.reputation_score || 50;
@@ -75,16 +69,13 @@ function calcScore(agent, pricing) {
 }
 
 /**
- * Fetch and rank providers for a canonical capability name.
- * Optionally filter by budget (max price_per_call in ETH) and version string.
- * Returns { providers, cheapest } where cheapest is the cheapest overall (ignoring budget).
+ * Fetch and rank providers for a canonical capability name (async).
  */
-function getProviders(capability, budget, version = null) {
-  const db = getDb();
-
-  const agents = db.prepare(
-    "SELECT id, name, status, capabilities, pricing, reputation_score, success_rate, latency_ms, webhook_url, owner_address, verified, capability_version, payment_methods FROM agents WHERE status = 'active'"
-  ).all();
+async function getProviders(capability, budget, version = null) {
+  const agents = await query(
+    "SELECT id, name, status, capabilities, pricing, reputation_score, success_rate, latency_ms, webhook_url, owner_address, verified, capability_version, payment_methods FROM agents WHERE status = 'active'",
+    []
+  );
 
   const allMatching = [];
 
@@ -145,12 +136,11 @@ function getProviders(capability, budget, version = null) {
 
 /**
  * Score a capability name against a set of query keywords.
- * Scores domain/category/action parts + description field.
  */
 function scoreCapability(capability, description, keywords) {
   const capLower = capability.toLowerCase();
   const descLower = (description || '').toLowerCase();
-  const parts = capLower.split('.');  // [domain, category, action, ...]
+  const parts = capLower.split('.');
 
   let score = 0;
   let matched = 0;
@@ -159,7 +149,6 @@ function scoreCapability(capability, description, keywords) {
     const kwLower = kw.toLowerCase();
     let kwScore = 0;
 
-    // Exact part match (higher weight)
     for (let i = 0; i < parts.length; i++) {
       if (parts[i] === kwLower) {
         kwScore += (i === 0 ? 0.3 : i === 1 ? 0.4 : 0.3);
@@ -168,7 +157,6 @@ function scoreCapability(capability, description, keywords) {
       }
     }
 
-    // Description match
     if (descLower.includes(kwLower)) {
       kwScore += 0.2;
     }
@@ -177,7 +165,6 @@ function scoreCapability(capability, description, keywords) {
     score += kwScore;
   }
 
-  // Normalize: scale by fraction of keywords matched
   if (keywords.length > 0 && matched > 0) {
     score = score * (matched / keywords.length);
   }
@@ -192,27 +179,22 @@ router.get('/resolve', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'capability query parameter is required' });
   }
 
-  // federated=true means "I am a peer asking you — don't fan-out further" (loop guard)
   const isFederatedRequest = req.query.federated === 'true';
   const visited = (req.query.visited || '').split(',').filter(Boolean);
 
   const { canonical, resolvedFrom, version } = resolveCapabilityName(raw);
-  const { providers } = getProviders(canonical, null, version);
+  const { providers } = await getProviders(canonical, null, version);
 
-  // Build base response object
   const baseResponse = { capability: canonical, providers };
   if (resolvedFrom) baseResponse.resolved_from = resolvedFrom;
   if (version)      baseResponse.version = version;
 
-  // Local hit → return immediately (no fan-out needed)
   if (providers.length > 0) {
     return res.json(baseResponse);
   }
 
-  // No local result AND this is NOT a peer request — fan-out to peers
   if (!isFederatedRequest) {
-    const db = getDb();
-    const peers = db.prepare(`SELECT url FROM peers WHERE status = 'active'`).all();
+    const peers = await query(`SELECT url FROM peers WHERE status = 'active'`, []);
     const thisNode   = process.env.NODE_URL || 'https://clawagent-production.up.railway.app';
     const newVisited = [...visited, thisNode].join(',');
 
@@ -228,7 +210,6 @@ router.get('/resolve', async (req, res) => {
             clearTimeout(tid);
             if (!r.ok) return null;
             const data = await r.json();
-            // Tag each provider with the peer node it came from
             return {
               ...data,
               providers: (data.providers || []).map(p => ({ ...p, source_node: peer.url })),
@@ -236,8 +217,10 @@ router.get('/resolve', async (req, res) => {
           } catch {
             clearTimeout(tid);
             // Mark peer inactive on failure
-            db.prepare(`UPDATE peers SET last_error = ?, status = 'inactive' WHERE url = ?`)
-              .run(new Date().toISOString(), peer.url);
+            await run(
+              `UPDATE peers SET last_error = ?, status = 'inactive' WHERE url = ?`,
+              [new Date().toISOString(), peer.url]
+            );
             return null;
           }
         })
@@ -257,7 +240,6 @@ router.get('/resolve', async (req, res) => {
     }
   }
 
-  // Nothing found anywhere
   return res.json({ ...baseResponse, federated: !isFederatedRequest, peer_count: 0 });
 });
 
@@ -272,12 +254,12 @@ router.get('/search', async (req, res) => {
   const visited = (req.query.visited || '').split(',').filter(Boolean);
 
   const keywords = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const db = getDb();
 
   // Gather all unique capabilities from active agents
-  const agents = db.prepare(
-    "SELECT capabilities, pricing, reputation_score, success_rate, latency_ms, webhook_url, description, name, id FROM agents WHERE status = 'active'"
-  ).all();
+  const agents = await query(
+    "SELECT capabilities, pricing, reputation_score, success_rate, latency_ms, webhook_url, description, name, id FROM agents WHERE status = 'active'",
+    []
+  );
 
   const capMap = new Map(); // capability → { providers: [], description: '' }
 
@@ -322,10 +304,8 @@ router.get('/search', async (req, res) => {
     }
   }
 
-  // Sort by score descending
   results.sort((a, b) => b.score - a.score);
 
-  // Remove description if empty
   const clean = results.map(r => {
     const obj = { capability: r.capability, score: r.score, providers: r.providers };
     if (r.description) obj.description = r.description;
@@ -335,7 +315,7 @@ router.get('/search', async (req, res) => {
   // Fan-out to peers if not a federated request
   let peerResultsMerged = [];
   if (!isFederatedRequest) {
-    const peers = db.prepare(`SELECT url FROM peers WHERE status = 'active'`).all();
+    const peers = await query(`SELECT url FROM peers WHERE status = 'active'`, []);
     const thisNode   = process.env.NODE_URL || 'https://clawagent-production.up.railway.app';
     const newVisited = [...visited, thisNode].join(',');
 
@@ -367,7 +347,7 @@ router.get('/search', async (req, res) => {
       .flatMap(r => r.value);
   }
 
-  // Merge peer results: combine scores for duplicate capabilities
+  // Merge peer results
   const merged = [...clean];
   for (const peerItem of peerResultsMerged) {
     const existing = merged.find(r => r.capability === peerItem.capability);
@@ -389,14 +369,12 @@ router.get('/search', async (req, res) => {
 
 /**
  * Core call logic — shared between POST /call and POST /call/async
- * @param {object} opts  { capability (raw), input, budget, timeout_ms, payment_proof }
- * @returns {Promise<{ status, output, provider, capability, resolved_from? }>}
  */
 async function resolveAndCall({ capability: raw, input, budget, timeout_ms, payment_proof = null, payment_scheme = null }) {
   if (!raw) throw Object.assign(new Error('capability is required'), { statusCode: 400 });
 
   const { canonical, resolvedFrom, version } = resolveCapabilityName(raw);
-  const { providers, cheapest } = getProviders(canonical, budget != null ? budget : null, version);
+  const { providers, cheapest } = await getProviders(canonical, budget != null ? budget : null, version);
 
   const baseInfo = {
     capability: canonical,
@@ -404,7 +382,6 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
     ...(version && { version }),
   };
 
-  // Budget exceeded — no providers within budget
   if (providers.length === 0 && budget != null && cheapest) {
     const err = Object.assign(
       new Error(`No providers within budget of ${budget} ETH`),
@@ -422,7 +399,6 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
   }
 
   if (providers.length === 0) {
-    // Try built-in before 404
     const builtinFn = BUILTINS[canonical];
     if (builtinFn) {
       const output = await builtinFn(input || {});
@@ -439,16 +415,9 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
 
   const timeoutMs = (typeof timeout_ms === 'number' && timeout_ms > 0) ? timeout_ms : 5000;
 
-  // Helper: fetch a provider endpoint with timeout.
-  // If the provider returns 402:
-  //   - If payment_proof is provided, retry with X-PAYMENT header.
-  //   - Otherwise, return a structured payment_required result (not an error).
-  // Returns { response, paymentMade } or throws on network/timeout errors.
   async function fetchWithTimeout(endpoint, capabilityName, inputData, ms) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), ms);
-    // Send raw input directly to provider — providers define their own API format.
-    // Callers should pass the full provider-expected body in the `input` field.
     const reqBody = JSON.stringify(inputData || {});
 
     try {
@@ -459,10 +428,8 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
         signal:  controller.signal,
       });
 
-      // ── x402 payment handling ──────────────────────────────────────────────
       if (providerRes.status === 402) {
         const wwwAuth = providerRes.headers.get('www-authenticate') || '';
-        // Parse x402 JSON body for payment details (e.g. ClawAgent returns payment info in body, not header)
         let paymentAccepts = null;
         try {
           const bodyText = await providerRes.text();
@@ -470,10 +437,9 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
           if (bodyJson.accepts && Array.isArray(bodyJson.accepts)) {
             paymentAccepts = bodyJson.accepts;
           }
-        } catch (_) { /* non-JSON 402 body — ignore */ }
+        } catch (_) {}
         clearTimeout(timeoutId);
 
-        // Detect scheme: prefer WWW-Authenticate header, fallback to body scheme, then default x402
         const detectedSchemeFromHeader = detectScheme(wwwAuth);
         const bodyScheme = paymentAccepts?.[0]?.scheme === 'exact' ? 'x402' : null;
         const effectiveScheme = detectedSchemeFromHeader !== 'unknown'
@@ -481,7 +447,6 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
           : (bodyScheme || 'x402');
 
         if (payment_proof) {
-          // Determine payment header name based on scheme
           const scheme = payment_scheme || effectiveScheme;
           let paymentHeaders = {};
           if (scheme === 'xmr402' || scheme === 'intmax402') {
@@ -490,7 +455,6 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
             paymentHeaders['X-PAYMENT'] = payment_proof;
           }
 
-          // Retry with client-supplied payment proof
           const retryController = new AbortController();
           const retryTimer = setTimeout(() => retryController.abort(), ms);
           providerRes = await fetch(endpoint, {
@@ -506,7 +470,6 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
           return { response: providerRes, paymentMade: true, paymentScheme: scheme };
         }
 
-        // No payment_proof — signal caller to return payment_required to SDK
         const err = Object.assign(
           new Error('payment_required'),
           {
@@ -514,12 +477,11 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
             paymentRequired: true,
             wwwAuthenticate: wwwAuth,
             paymentScheme: effectiveScheme,
-            paymentAccepts,  // x402 JSON body accepts array
+            paymentAccepts,
           }
         );
         throw err;
       }
-      // ──────────────────────────────────────────────────────────────────────
 
       clearTimeout(timeoutId);
       return { response: providerRes, paymentMade: false };
@@ -570,7 +532,6 @@ async function resolveAndCall({ capability: raw, input, budget, timeout_ms, paym
         ...(paymentMade ? { payment: { paid: true, scheme: paymentScheme || 'x402' } } : {}),
       };
     } catch (err) {
-      // 402: provider wants payment — return payment_required to SDK (client-side signing)
       if (err.paymentRequired) {
         return {
           ...baseInfo,

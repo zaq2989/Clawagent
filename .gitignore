@@ -8,3 +8,4 @@ demo/node_modules
 clawagent.db
 clawagent.db-shm
 clawagent.db-wal
+worker/ecosystem.config.js

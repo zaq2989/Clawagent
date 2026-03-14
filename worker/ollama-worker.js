@@ -8,6 +8,9 @@
 
 'use strict';
 
+const { initKnowledgeStore, searchKnowledge } = require('./knowledge-store.js');
+const { runStudySession } = require('./study-session.js');
+
 const CLAWAGENT_URL = process.env.CLAWAGENT_URL || 'https://clawagent-production.up.railway.app';
 const OLLAMA_URL    = process.env.OLLAMA_URL    || 'http://localhost:11434';
 const OLLAMA_MODEL  = process.env.OLLAMA_MODEL  || 'qwen2.5:7b';
@@ -116,9 +119,14 @@ async function getMyAgentId() {
 // ---------------------------------------------------------------------------
 // 3. Execute a prompt via Ollama
 // ---------------------------------------------------------------------------
-async function callOllama(prompt, systemPrompt = '') {
+async function callOllama(prompt, systemPrompt = '', knowledgeSection = '') {
   const url = `${OLLAMA_URL}/api/generate`;
   assertSafeUrl(url);
+
+  const effectiveSystem = [
+    systemPrompt || 'あなたはタスクを実行するAIエージェントです。',
+    knowledgeSection,
+  ].filter(Boolean).join('');
 
   const body = {
     model: OLLAMA_MODEL,
@@ -126,7 +134,7 @@ async function callOllama(prompt, systemPrompt = '') {
     stream: false,
     options: { num_predict: 1024 },
   };
-  if (systemPrompt) body.system = systemPrompt;
+  if (effectiveSystem) body.system = effectiveSystem;
 
   const res = await fetch(url, {
     method: 'POST',
@@ -193,8 +201,20 @@ async function pollAndProcess() {
 
     const prompt = handler(inputData);
 
-    // Run Ollama
-    const output = await callOllama(prompt);
+    // --- BM25 knowledge injection ---
+    const queryText = inputData.text || inputData.code || task.description || capability;
+    const relevantKnowledge = searchKnowledge(queryText, 3);
+    const knowledgeSection = relevantKnowledge.length > 0
+      ? `\n\n## 過去の学習（参考）\n${relevantKnowledge.map(k =>
+          `- [${k.outcome}] ${k.learning}`
+        ).join('\n')}`
+      : '';
+    if (knowledgeSection) {
+      console.log(`[${WORKER_NAME}] Injecting ${relevantKnowledge.length} knowledge entry(ies).`);
+    }
+
+    // Run Ollama (with knowledge injected into system prompt)
+    const output = await callOllama(prompt, '', knowledgeSection);
     console.log(`[${WORKER_NAME}] Ollama done. output[:80]: ${output.substring(0, 80)}...`);
 
     // Submit result via PATCH /api/tasks/:id/status
@@ -203,6 +223,10 @@ async function pollAndProcess() {
       body: JSON.stringify({ status: 'completed', result: { output } }),
     });
     console.log(`[${WORKER_NAME}] Task ${task.id} completed:`, JSON.stringify(completeData).substring(0, 120));
+
+    // --- Post-task self-improvement (non-blocking) ---
+    runStudySession({ task, result: output, success: true }).catch(console.warn);
+
   } catch (err) {
     console.error(`[${WORKER_NAME}] Error processing task ${task.id}:`, err.message);
     // Attempt to mark task as failed
@@ -212,6 +236,8 @@ async function pollAndProcess() {
         body: JSON.stringify({ status: 'failed', result: { error: err.message } }),
       });
     } catch (_) {}
+    // --- Post-task self-improvement for failures too (non-blocking) ---
+    runStudySession({ task, result: err.message, success: false }).catch(console.warn);
   }
 }
 
@@ -220,6 +246,7 @@ async function pollAndProcess() {
 // ---------------------------------------------------------------------------
 async function main() {
   console.log(`[${WORKER_NAME}] Starting Ollama Worker`);
+  initKnowledgeStore();
   console.log(`  ClawAgent : ${CLAWAGENT_URL}`);
   console.log(`  Ollama    : ${OLLAMA_URL}`);
   console.log(`  Model     : ${OLLAMA_MODEL}`);
